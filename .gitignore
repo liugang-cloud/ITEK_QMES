@@ -1,0 +1,9 @@
+node_modules/
+.trae-html-share-packages/
+qmes-architecture/
+*.log
+.DS_Store
+.vscode/
+.idea/
+*.bak
+*.old
