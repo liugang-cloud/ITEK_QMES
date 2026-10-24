@@ -11,144 +11,2086 @@
     assemble: { label: '扫码装配',   color: '#0d9488' },
     base:     { label: '基础资料',   color: '#d97706' },
     imports:  { label: 'Excel 导入', color: '#059669' },
-    barcode:  { label: '条码管理',   color: '#db2777' }
+    barcode:  { label: '条码管理',   color: '#db2777' },
+    report:   { label: '报表管理',   color: '#0891b2' }
   };
 
-  /* ---------------- 51 个业务接口（module.exports 顺序） ---------------- */
+  /* ---------------- 62 个业务接口（module.exports 顺序） ---------------- */
   var IFACES = [
-    { no: 1,  name: 'login',             line: 'L9',    desc: '校验 user 表用户名密码，签发内存 token' },
-    { no: 2,  name: 'getSession',        line: 'L35',   desc: '内存会话查询（http.js 鉴权与 checkSession 使用）' },
-    { no: 3,  name: 'logout',            line: 'L40',   desc: '销毁服务端会话 token' },
-    { no: 4,  name: 'queryMaterial',     line: 'L47',   desc: '条码格式校验 + 物料查询' },
-    { no: 5,  name: 'checkBatch',        line: 'L72',   desc: '批次/条码是否已检验（查重）' },
-    { no: 6,  name: 'getInspectItems',   line: 'L103',  desc: '按物料多规则带出检验项目与标准（item_id 去重）' },
-    { no: 7,  name: 'createInspection',  line: 'L174',  desc: '事务写检验单（单头 + 明细，写 create_by/inspector）' },
-    { no: 8,  name: 'queryInspectionList', line: 'L222', desc: '检验单列表（组合筛选 + 分页 + 录入进度）' },
-    { no: 9,  name: 'getInspectionDetail', line: 'L280', desc: '检验单明细（含审计字段与录入进度）' },
-    { no: 10, name: 'updateInspectionDetail', line: 'L314', desc: '事务：归档历史版本 + 重写明细 + 重算结论/完成度' },
-    { no: 11, name: 'queryInspectItems', line: 'L431',  desc: '检验项目基础资料查询（分页）' },
-    { no: 12, name: 'queryMaterials',    line: 'L450',  desc: '物料查询（分页）' },
-    { no: 13, name: 'queryInspectRules', line: 'L470',  desc: '检验规则单头列表（按规则聚合 + 项目数）' },
-    { no: 14, name: 'getInspectRuleDetail', line: 'L491', desc: '规则单头 + 明细（联项目带出录入类型）' },
-    { no: 15, name: 'updateInspectRule', line: 'L509',  desc: '事务更新规则单头 + 明细差量更新' },
-    { no: 16, name: 'queryBomParentList', line: 'L573', desc: 'BOM 列表（按主件聚合分页 + 当前版本号）' },
-    { no: 17, name: 'getBomDetail',      line: 'L601',  desc: 'BOM 主件头 + 元件明细 + 当前版本号' },
-    { no: 18, name: 'updateBomDetail',   line: 'L631',  desc: '事务：归档 bom_history + 差量更新 + 审计字段' },
-    { no: 19, name: 'queryBomHistory',   line: 'L716',  desc: 'BOM 历史版本列表' },
-    { no: 20, name: 'getBomHistoryVersion', line: 'L745', desc: '指定版本的修改前 BOM 明细（联物料）' },
-    { no: 21, name: 'checkAssemble',     line: 'L773',  desc: '主件 SN 是否已完成装配（scanMainSn 内部调用）' },
-    { no: 22, name: 'checkMainMaterial', line: 'L786',  desc: '校验是否为主件 + 返回 BOM 元件清单' },
-    { no: 23, name: 'checkComponentSn',  line: 'L804',  desc: '元件 SN 查重（支持排除本单明细）' },
-    { no: 24, name: 'checkComponentBom', line: 'L822',  desc: '元件 BOM 匹配验证' },
-    { no: 25, name: 'checkComponentInspection', line: 'L835', desc: '元件 SN 是否存在检验记录（无则拦截）' },
-    { no: 26, name: 'createAssemble',    line: 'L854',  desc: '事务写装配单（BOM 槽位全量展开，status=30）' },
-    { no: 27, name: 'queryAssembleList', line: 'L926',  desc: '装配单列表（分页 + 装配进度）' },
-    { no: 28, name: 'getAssembleDetail', line: 'L977',  desc: '装配单明细（槽位结构 + 审计字段）' },
-    { no: 29, name: 'updateAssembleDetail', line: 'L1011', desc: '事务：归档历史 + 槽位差量更新 + 重算完成度' },
-    { no: 30, name: 'createInspectItem', line: 'L1207', desc: '新增检验项目（校验编号唯一）' },
-    { no: 31, name: 'updateInspectItem', line: 'L1226', desc: '更新检验项目（写 update_by/update_time）' },
-    { no: 32, name: 'createInspectRule', line: 'L1247', desc: '新增检验规则（含标准值 / 标准区间）' },
-    { no: 33, name: 'createMaterial',    line: 'L1296', desc: '新增物料（校验料号唯一，支持多规则）' },
-    { no: 34, name: 'updateMaterial',    line: 'L1316', desc: '更新物料（写 update_by/update_time）' },
-    { no: 35, name: 'getRuleCodes',      line: 'L1335', desc: '规则列表（rule_code + rule_name）' },
-    { no: 36, name: 'createBom',         line: 'L1347', desc: '新增 BOM（校验料号存在与组合唯一）' },
-    { no: 37, name: 'importInspectItems', line: 'L1407', desc: '批量导入检验项目（整批校验 + 事务）' },
-    { no: 38, name: 'importInspectRules', line: 'L1492', desc: '批量导入检验规则（整批校验 + 事务）' },
-    { no: 39, name: 'importMaterials',   line: 'L1604', desc: '批量导入物料（整批校验 + 事务）' },
-    { no: 40, name: 'importBom',         line: 'L1838', desc: '批量导入 BOM（整批校验 + 事务）' },
-    { no: 41, name: 'getBarcodeRule',    line: 'L1680', desc: '获取条码格式（全局唯一，id=1）' },
-    { no: 42, name: 'updateBarcodeRule', line: 'L1697', desc: '更新条码格式' },
-    { no: 43, name: 'recordSnSerial',    line: 'L1724', desc: '条码写入 sn_serial 档案（防重复跳过）' },
-    { no: 44, name: 'querySnArchive',    line: 'L1743', desc: '条码档案多维模糊查询（联物料名称）' },
-    { no: 45, name: 'getSerialMap',      line: 'L1771', desc: '物料+日期 → 当前最大流水号' },
-    { no: 46, name: 'deleteInspectionRecords', line: 'L1802', desc: '按 id 批量删除检验单（含明细，事务）' },
-    { no: 47, name: 'deleteAssembleRecords', line: 'L1819', desc: '按 id 批量删除装配单（含明细，事务）' },
-    { no: 48, name: 'queryAssembleHistory', line: 'L1114', desc: '装配单历史版本列表' },
-    { no: 49, name: 'getAssembleHistoryVersion', line: 'L1134', desc: '指定版本的修改前装配明细' },
-    { no: 50, name: 'queryInspectionHistory', line: 'L1161', desc: '检验单历史版本列表' },
-    { no: 51, name: 'getInspectionHistoryVersion', line: 'L1181', desc: '指定版本的修改前检验明细' }
-  ];
+  {
+    "no": 1,
+    "name": "login",
+    "line": "L63",
+    "desc": "校验 user 表用户名密码，签发内存 token",
+    "steps": [
+      "校验 username/password 非空",
+      "查询 user 表按用户名取记录并比对密码",
+      "crypto.randomUUID 生成 token",
+      "写入内存 sessions Map（含 realname 与登录时间）",
+      "返回 token/username/realname"
+    ]
+  },
+  {
+    "no": 2,
+    "name": "getSession",
+    "line": "L89",
+    "desc": "内存会话查询，http.js 鉴权与 checkSession 共用",
+    "steps": [
+      "入参 token 统一转为字符串",
+      "从内存 sessions Map 读取会话",
+      "未命中返回 null，由路由层拦截未登录"
+    ]
+  },
+  {
+    "no": 3,
+    "name": "logout",
+    "line": "L94",
+    "desc": "销毁服务端内存会话 token",
+    "steps": [
+      "入参 token 统一转为字符串",
+      "从 sessions Map 删除该会话",
+      "无条件返回成功（幂等）"
+    ]
+  },
+  {
+    "no": 4,
+    "name": "queryMaterial",
+    "line": "L101",
+    "desc": "条码格式校验 + material 表物料查询",
+    "steps": [
+      "按 # 拆分条码为三段",
+      "校验第二段 8 位数字、第三段 4 位数字",
+      "查询 material 表按 material_id",
+      "物料不存在返回明确错误",
+      "返回料号/名称/规格/检验大类"
+    ]
+  },
+  {
+    "no": 5,
+    "name": "checkBatch",
+    "line": "L126",
+    "desc": "按 batch_no 查 inspection_record 实现扫码查重",
+    "steps": [
+      "按 batch_no 查询 inspection_record",
+      "已存在则返回该条码已经检验过",
+      "不存在返回成功并回传批次号"
+    ]
+  },
+  {
+    "no": 6,
+    "name": "getInspectItems",
+    "line": "L157",
+    "desc": "按物料多规则带出检验项目与标准（按项目去重）",
+    "steps": [
+      "查询 material 表取 inspect_category",
+      "splitRules 拆分多规则编码",
+      "按 rule_code 查 inspection_rule_item 并联项目与规则",
+      "按 rule_code、seq 排序",
+      "用 Set 按 item_id 去重后返回项目与标准"
+    ]
+  },
+  {
+    "no": 7,
+    "name": "createInspection",
+    "line": "L228",
+    "desc": "事务写检验单单头与明细，结论由明细判定",
+    "steps": [
+      "按 hasMeasured 将未录入项 is_pass 置 NULL",
+      "judgeResult 依明细判定整单结论",
+      "beginTransaction 开启事务",
+      "插入 inspection_record 单头（写 inspector/create_by）",
+      "循环插入 inspection_record_detail 明细",
+      "calcInspectionComplete 重算完成度并回写单头",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 8,
+    "name": "queryInspectionList",
+    "line": "L276",
+    "desc": "检验单列表，组合筛选、分页与录入进度统计",
+    "steps": [
+      "归一化页码与页大小（上限 200）",
+      "拼物料/批次/检验员/规则模糊条件",
+      "支持完成状态与检验日期区间筛选",
+      "结束日期仅日期时补足 23:59:59",
+      "子查询统计已扫/应检/合格与已判定数",
+      "分页查询列表并返回总数"
+    ]
+  },
+  {
+    "no": 9,
+    "name": "getInspectionDetail",
+    "line": "L336",
+    "desc": "按 batch_no 查检验单头与明细，带出标准与录入类型",
+    "steps": [
+      "按 batch_no 查 inspection_record 并联 material",
+      "无记录返回检验单不存在",
+      "按 record_id 查 inspection_record_detail",
+      "联 inspection_rule_item 带标准、联项目带录入类型",
+      "返回单头与明细列表"
+    ]
+  },
+  {
+    "no": 10,
+    "name": "updateInspectionDetail",
+    "line": "L372",
+    "desc": "历史归档 + 明细差量更新 + 重算结论与完成度",
+    "steps": [
+      "校验 batch_no 并查询 record_id",
+      "事务外读取旧明细，比对与归档共用",
+      "短路优化：新旧明细与 process_result 全同直接返回",
+      "beginTransaction 后按旧明细写 history 新版本",
+      "修改前无明细时写空版本标记保证版本链",
+      "按明细 id 更新测量值/说明/判定/备注",
+      "重算整单结论与完成度并覆盖 update_by/update_time",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 11,
+    "name": "queryInspectItems",
+    "line": "L544",
+    "desc": "检验项目基础资料分页查询",
+    "steps": [
+      "buildConditions 组装编号/名称/类型模糊条件",
+      "is_active 采用精确匹配",
+      "pagedQuery 按 item_id 排序分页",
+      "返回总数与列表"
+    ]
+  },
+  {
+    "no": 12,
+    "name": "queryMaterials",
+    "line": "L563",
+    "desc": "物料分页查询，支持检验大类多选匹配",
+    "steps": [
+      "组装料号/名称/规格/检验大类模糊条件",
+      "is_active 采用精确过滤",
+      "inspect_categories 多选转 FIND_IN_SET 匹配",
+      "pagedQuery 分页返回总数与列表"
+    ]
+  },
+  {
+    "no": 13,
+    "name": "queryInspectRules",
+    "line": "L592",
+    "desc": "检验规则单头列表，按规则聚合项目数",
+    "steps": [
+      "按 rule_code/rule_name 组装模糊条件",
+      "单头 LEFT JOIN 单身统计 item_count",
+      "按规则字段分组分页",
+      "返回总数与聚合列表"
+    ]
+  },
+  {
+    "no": 14,
+    "name": "getInspectRuleDetail",
+    "line": "L613",
+    "desc": "检验规则单头 + 明细，带出项目录入类型",
+    "steps": [
+      "按 id 或 rule_code 查 inspection_rule 单头",
+      "单头不存在返回错误",
+      "查 inspection_rule_item 并联 inspection_item",
+      "按 seq 排序返回单头与明细"
+    ]
+  },
+  {
+    "no": 15,
+    "name": "updateInspectRule",
+    "line": "L632",
+    "desc": "事务更新规则单头，明细做差量增改删",
+    "steps": [
+      "校验 id 且规则单头存在",
+      "beginTransaction 开启事务",
+      "按入参动态拼单头 SET，强制写 update_by/update_time",
+      "parseStdRange 逐项校验标准区间格式",
+      "明细差量：有 id 更新、无 id 新增、清单外删除",
+      "commit 提交，异常 rollback 并返回错误信息"
+    ]
+  },
+  {
+    "no": 16,
+    "name": "queryBomParentList",
+    "line": "L696",
+    "desc": "BOM 列表按主件聚合，支持按元件反查",
+    "steps": [
+      "主件料号/名称组装模糊条件",
+      "元件料号/名称转 EXISTS 子查询过滤",
+      "按 parent_material_id 分组聚合",
+      "bom_history 最大版本 +1 得当前版本号",
+      "分页返回主件 BOM 列表"
+    ]
+  },
+  {
+    "no": 17,
+    "name": "getBomDetail",
+    "line": "L739",
+    "desc": "BOM 主件信息 + 元件明细 + 当前版本号",
+    "steps": [
+      "校验 parent_material_id 非空",
+      "查 material 表取主件信息",
+      "查 bom 联 material 取元件名称与用量",
+      "查 bom_history 最大版本 +1",
+      "返回主件、元件明细与当前版本"
+    ]
+  },
+  {
+    "no": 18,
+    "name": "updateBomDetail",
+    "line": "L769",
+    "desc": "事务归档 bom_history + 按元件料号差量更新",
+    "steps": [
+      "校验主件料号与 items 数组",
+      "事务外读旧 BOM，比对与归档共用",
+      "短路优化：新旧元件去重排序后全同返回 no_change",
+      "beginTransaction 后旧明细写 bom_history 新版本",
+      "修改前无明细时写空版本标记",
+      "按料号差量删/插/改用量的 bom 行",
+      "统一覆盖 update_by/update_time 并 commit"
+    ]
+  },
+  {
+    "no": 19,
+    "name": "queryBomHistory",
+    "line": "L883",
+    "desc": "BOM 历史版本列表，排除空版本标记",
+    "steps": [
+      "校验 parent_material_id",
+      "按 version_no 分组统计变更人与条数",
+      "逐版本按 bom_id 非空重算有效条数",
+      "按版本号倒序返回列表"
+    ]
+  },
+  {
+    "no": 20,
+    "name": "getBomHistoryVersion",
+    "line": "L912",
+    "desc": "查看指定版本修改前的 BOM 明细",
+    "steps": [
+      "校验主件料号与版本号",
+      "按 version_no 且 bom_id 非空查历史行",
+      "联 material 带出元件名称与规格",
+      "无记录返回历史版本不存在",
+      "返回版本头信息与明细"
+    ]
+  },
+  {
+    "no": 21,
+    "name": "checkAssemble",
+    "line": "L940",
+    "desc": "主件 SN 是否已完成装配（status=30）",
+    "steps": [
+      "按 main_sn 查 assemble_record 且 status=30",
+      "已存在返回已完成装配错误",
+      "未装配返回成功"
+    ]
+  },
+  {
+    "no": 22,
+    "name": "checkMainMaterial",
+    "line": "L955",
+    "desc": "校验是否主件并返回对应 BOM 元件清单",
+    "steps": [
+      "解析 mid 与 bom_version，兼容对象与字符串入参",
+      "查 bom_history 最大版本号",
+      "版本在范围内则按版本查历史 BOM",
+      "否则查 bom 表当前生效 BOM",
+      "无元件返回该物料非主件或无 BOM",
+      "返回主件料号、元件清单与版本"
+    ]
+  },
+  {
+    "no": 23,
+    "name": "checkComponentSn",
+    "line": "L1002",
+    "desc": "元件 SN 查重，支持排除本单明细",
+    "steps": [
+      "按 component_sn 查装配明细并联装配单头",
+      "限定 assemble_record.status=30",
+      "传 exclude_record_id 时排除本单",
+      "有记录返回该元件已被装配",
+      "否则返回成功"
+    ]
+  },
+  {
+    "no": 24,
+    "name": "checkComponentBom",
+    "line": "L1022",
+    "desc": "校验元件是否属于主件 BOM 并返回用量",
+    "steps": [
+      "bomVersion 有值则查 bom_history 指定版本",
+      "版本为空则查 bom 表当前生效",
+      "按主件+元件料号匹配记录",
+      "未命中返回该物料非此主件元件",
+      "命中返回用量 quantity"
+    ]
+  },
+  {
+    "no": 25,
+    "name": "checkComponentInspection",
+    "line": "L1043",
+    "desc": "元件 SN 必须有检验记录才允许装配",
+    "steps": [
+      "按 batch_no 查 inspection_record",
+      "无记录返回没有检验记录不允许装配",
+      "有记录返回检验单 id 与检验结论"
+    ]
+  },
+  {
+    "no": 26,
+    "name": "createAssemble",
+    "line": "L1062",
+    "desc": "事务写装配单头与元件明细，status 固定 30",
+    "steps": [
+      "取主件 BOM 历史最大版本 +1 作为 bom_version",
+      "beginTransaction 开启事务",
+      "插入 assemble_record 单头（写 operator/create_by）",
+      "循环插入 assemble_record_detail 元件明细",
+      "calcAssembleComplete 按 BOM 用量重算完成度",
+      "回写 is_complete 并 commit，异常 rollback"
+    ]
+  },
+  {
+    "no": 27,
+    "name": "queryAssembleList",
+    "line": "L1134",
+    "desc": "装配单列表，支持元件 SN/料号反查与进度统计",
+    "steps": [
+      "归一化页码与页大小（上限 200）",
+      "拼主件SN/料号/操作员/状态条件",
+      "完成状态与元件 SN/料号用 EXISTS 过滤",
+      "按装配日期区间筛选，日期补 23:59:59",
+      "子查询统计已扫数量与应扫数量",
+      "分页返回列表与总数"
+    ]
+  },
+  {
+    "no": 28,
+    "name": "getAssembleDetail",
+    "line": "L1202",
+    "desc": "装配单头 + 槽位明细 + BOM 与可选版本列表",
+    "steps": [
+      "按 main_sn 查装配单头并联 material",
+      "无记录返回装配单不存在",
+      "查 assemble_record_detail 槽位明细",
+      "按 bom_version 选 bom_history 或 bom 表取 BOM",
+      "汇总历史版本并与当前 BOM 比对补虚拟版本",
+      "返回单头、明细、BOM 与版本列表"
+    ]
+  },
+  {
+    "no": 29,
+    "name": "updateAssembleDetail",
+    "line": "L1312",
+    "desc": "事务归档历史 + 槽位差量更新 + 重算完成度",
+    "steps": [
+      "校验 main_sn 并取 record_id 与主件料号",
+      "事务外读旧明细，比对与归档共用",
+      "短路优化：明细与 bom_version 全同返回 no_change",
+      "beginTransaction 后旧明细写 assembly history 新版本",
+      "按 SN 差量：保留已扫、删除缺失、补插新扫与空槽位",
+      "calcAssembleComplete 重算完成度并写 update_by/update_time",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 30,
+    "name": "createInspectItem",
+    "line": "L1747",
+    "desc": "新增检验项目，依赖唯一键拦截重复",
+    "steps": [
+      "db.insert 写 inspection_item 并记录 create_by",
+      "捕获 ER_DUP_ENTRY 返回编号已存在",
+      "成功返回 item_id"
+    ]
+  },
+  {
+    "no": 31,
+    "name": "updateInspectItem",
+    "line": "L1766",
+    "desc": "更新检验项目字段并写审计字段",
+    "steps": [
+      "校验 item_id 且项目存在",
+      "按入参动态拼 SET（名称/类型/状态）",
+      "无更新字段返回错误",
+      "强制写 update_by/update_time 后执行更新"
+    ]
+  },
+  {
+    "no": 32,
+    "name": "createInspectRule",
+    "line": "L1787",
+    "desc": "新增检验规则，校验唯一性与标准区间",
+    "steps": [
+      "校验 rule_code 非空且未被占用",
+      "校验至少添加一个检验项目",
+      "parseStdRange 校验并归一化标准区间与标准值",
+      "beginTransaction 插入 inspection_rule 单头",
+      "循环插入 inspection_rule_item 明细",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 33,
+    "name": "createMaterial",
+    "line": "L1836",
+    "desc": "新增物料，检验大类支持多规则",
+    "steps": [
+      "splitRules 归一化检验大类为编码串",
+      "db.insert 写 material 并记录 create_by",
+      "捕获 ER_DUP_ENTRY 返回料号已存在",
+      "成功返回 material_id"
+    ]
+  },
+  {
+    "no": 34,
+    "name": "updateMaterial",
+    "line": "L1856",
+    "desc": "更新物料字段并写审计字段",
+    "steps": [
+      "校验 material_id 且物料存在",
+      "动态拼 SET（名称/规格/检验大类/状态）",
+      "inspect_category 经 splitRules 归一化",
+      "无更新字段返回错误",
+      "强制写 update_by/update_time 后执行更新"
+    ]
+  },
+  {
+    "no": 35,
+    "name": "getRuleCodes",
+    "line": "L1875",
+    "desc": "返回规则编码与名称，供物料多选关联",
+    "steps": [
+      "查 inspection_rule 全量规则",
+      "按 rule_code 排序取 id/code/name",
+      "返回规则列表"
+    ]
+  },
+  {
+    "no": 36,
+    "name": "createBom",
+    "line": "L1887",
+    "desc": "新增 BOM，校验料号存在与组合唯一",
+    "steps": [
+      "校验主件料号非空且存在于 material",
+      "逐项校验元件料号存在于 material",
+      "校验主件+元件组合在 bom 表不重复",
+      "校验本次提交的元件料号不重复",
+      "beginTransaction 批量插入 bom",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 37,
+    "name": "importInspectItems",
+    "line": "L1947",
+    "desc": "Excel 批量导入检验项目，整批校验后事务写入",
+    "steps": [
+      "校验 fileData 并用 XLSX 解析首个工作表",
+      "无数据行返回错误",
+      "逐行校验编号/名称必填与 Excel 内编号去重",
+      "转换录入类型与启用状态默认值",
+      "整批查库校验编号已存在，有错整批不导入",
+      "beginTransaction 批量插入 inspection_item",
+      "commit 提交，异常 rollback 整批回滚"
+    ]
+  },
+  {
+    "no": 38,
+    "name": "importInspectRules",
+    "line": "L2032",
+    "desc": "Excel 批量导入检验规则，按规则分组整批校验",
+    "steps": [
+      "解析 Excel 首个工作表，无数据行报错",
+      "逐行校验规则/项目编号与标准区间格式",
+      "按规则编号分组，行序自动生成 seq",
+      "规则说明取首个非空值，冲突即报错",
+      "项目缓存校验存在性，并校验规则编号未占用",
+      "整批有错则不导入并返回错误明细",
+      "beginTransaction 逐规则插单头再插单身",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 39,
+    "name": "importMaterials",
+    "line": "L2144",
+    "desc": "Excel 批量导入物料，整批校验后事务写入",
+    "steps": [
+      "解析 Excel，无数据行返回错误",
+      "逐行校验编号/名称必填与 Excel 内去重",
+      "归一化检验大类与启用状态",
+      "整批查库校验物料编号已存在",
+      "有错整批不导入并返回错误明细",
+      "beginTransaction 批量插入 material",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 40,
+    "name": "importBom",
+    "line": "L2478",
+    "desc": "Excel 批量导入 BOM，整批校验后事务写入",
+    "steps": [
+      "解析 Excel，无数据行返回错误",
+      "逐行校验料号必填且主件与元件不同",
+      "校验用量为正数、(主件+元件) 在表内不重复",
+      "料号存在性校验，同一料号只查一次",
+      "校验组合在 bom 表不重复",
+      "整批有错则不导入并返回错误明细",
+      "beginTransaction 批量插入 bom",
+      "commit 提交，异常 rollback 回滚"
+    ]
+  },
+  {
+    "no": 41,
+    "name": "getBarcodeRule",
+    "line": "L2220",
+    "desc": "获取全局唯一条码格式，缺失时初始化默认值",
+    "steps": [
+      "查 barcode_rule 表 id=1",
+      "不存在则插入默认版式参数",
+      "重新查询并返回唯一格式"
+    ]
+  },
+  {
+    "no": 42,
+    "name": "updateBarcodeRule",
+    "line": "L2237",
+    "desc": "更新条码版式各元素位置与尺寸",
+    "steps": [
+      "遍历 14 个版式字段转数字并校验非负",
+      "校验标签宽高不小于 10、二维码尺寸不小于 5",
+      "调用 getBarcodeRule 确保记录存在",
+      "db.update 覆盖 id=1 记录",
+      "返回更新后的格式"
+    ]
+  },
+  {
+    "no": 43,
+    "name": "recordSnSerial",
+    "line": "L2264",
+    "desc": "写入条码打印流水档案，同 SN 防重复",
+    "steps": [
+      "校验 sn/material_id/sn_date 必填",
+      "按 sn 查 sn_serial 防重复",
+      "已存在直接返回成功并跳过写入",
+      "插入流水档案并将 serial_no 转数字",
+      "返回新记录 id 与 sn"
+    ]
+  },
+  {
+    "no": 44,
+    "name": "querySnArchive",
+    "line": "L2283",
+    "desc": "条码档案多维模糊查询，附带主件/元件与追溯标记",
+    "steps": [
+      "组装料号/名称/SN/日期范围条件",
+      "先统计满足条件的总数",
+      "查 sn_serial 并联 material 名称",
+      "子查询判定该料号为主件或元件",
+      "子查询判定有无检验记录与装配关系",
+      "分页按 id 倒序返回列表与总数"
+    ]
+  },
+  {
+    "no": 45,
+    "name": "getSerialMap",
+    "line": "L2326",
+    "desc": "按物料+日期批量取当前最大流水号",
+    "steps": [
+      "入参为空则全量分组取最大流水",
+      "否则按料号+日期构造 OR 条件",
+      "执行 MAX(serial_no) 分组查询",
+      "组装 material_id#sn_date 映射返回"
+    ]
+  },
+  {
+    "no": 46,
+    "name": "deleteInspectionRecords",
+    "line": "L2357",
+    "desc": "批量删除检验单，先删明细再删单头",
+    "steps": [
+      "兼容 ids 数组或单个 id",
+      "校验存在性，未找到返回错误",
+      "先删 inspection_record_detail 明细",
+      "再删 inspection_record 单头",
+      "返回实际删除条数"
+    ]
+  },
+  {
+    "no": 47,
+    "name": "deleteAssembleRecords",
+    "line": "L2374",
+    "desc": "批量删除装配单，先删明细再删单头",
+    "steps": [
+      "兼容 ids 数组或单个 id",
+      "校验装配单存在性",
+      "先删 assemble_record_detail 明细",
+      "再删 assemble_record 单头",
+      "返回删除条数，不动检验记录"
+    ]
+  },
+  {
+    "no": 48,
+    "name": "queryAssembleHistory",
+    "line": "L1453",
+    "desc": "装配单历史版本列表，支持 SN 或 record_id",
+    "steps": [
+      "支持 record_id 或 main_sn 定位装配单",
+      "无记录返回装配单不存在",
+      "按 version_no 分组统计条数与变更人",
+      "版本倒序返回列表"
+    ]
+  },
+  {
+    "no": 49,
+    "name": "getAssembleHistoryVersion",
+    "line": "L1473",
+    "desc": "查看指定版本的修改前装配明细",
+    "steps": [
+      "校验 record_id 与 version_no",
+      "按版本查 assemble_record_history",
+      "无记录返回历史版本不存在",
+      "过滤 detail_id 为空的版本标记行",
+      "返回变更人与明细"
+    ]
+  },
+  {
+    "no": 50,
+    "name": "queryBomVersions",
+    "line": "L1284",
+    "desc": "某主件的 BOM 历史版本与当前元件数",
+    "steps": [
+      "校验主件料号非空",
+      "按 version_no 分组统计元件数与首次使用时间",
+      "查 bom 表当前生效元件数",
+      "返回历史版本列表与当前数量"
+    ]
+  },
+  {
+    "no": 51,
+    "name": "queryInspectionHistory",
+    "line": "L1701",
+    "desc": "检验单历史版本列表，支持 batch_no 或 record_id",
+    "steps": [
+      "支持 record_id 或 batch_no 定位检验单",
+      "无记录返回检验单不存在",
+      "按 version_no 分组统计明细条数",
+      "版本倒序返回列表"
+    ]
+  },
+  {
+    "no": 52,
+    "name": "getInspectionHistoryVersion",
+    "line": "L1721",
+    "desc": "查看指定版本的修改前检验明细",
+    "steps": [
+      "校验 record_id 与 version_no",
+      "查 inspection_record_history 指定版本",
+      "无记录返回历史版本不存在",
+      "过滤 detail_id 为空的版本标记行",
+      "返回变更人与明细"
+    ]
+  },
+  {
+    "no": 53,
+    "name": "writeApiLog",
+    "line": "L13",
+    "desc": "公共接口日志：记录用户、入出参与耗时",
+    "steps": [
+      "登录接口从返回结果补取用户名",
+      "safeStr 截断入参出参至 8000 字符",
+      "INSERT api_log 记录用户/接口/入出参/耗时",
+      "写日志异常仅打印不阻塞业务"
+    ]
+  },
+  {
+    "no": 54,
+    "name": "queryApiLogs",
+    "line": "L31",
+    "desc": "接口调用日志分页查询",
+    "steps": [
+      "buildConditions 组装用户/接口/入出参模糊条件",
+      "追加 call_time 起止时间范围",
+      "pagedQuery 按 id 倒序分页",
+      "返回日志列表与总数"
+    ]
+  },
+  {
+    "no": 55,
+    "name": "queryYieldAnalysis",
+    "line": "L2392",
+    "desc": "良率分析报表：单头汇总 + 项目良率明细",
+    "steps": [
+      "校验物料与起止日期必填",
+      "日期补足 00:00:00 与 23:59:59",
+      "查 material 校验物料存在",
+      "统计检验单数与平均良率",
+      "统计 process_result 为拒绝的拒收数",
+      "按项目统计检验数/合格数与良率",
+      "返回头部汇总与项目明细"
+    ]
+  },
+  {
+    "no": 56,
+    "name": "getAssembleAnalysis",
+    "line": "L1517",
+    "desc": "装配分析：元件逐版本变更矩阵",
+    "steps": [
+      "校验 main_sn 并查装配单头",
+      "查历史版本分组及各版本明细",
+      "查当前明细与对应 BOM 元件",
+      "汇总全部元件并查 material 信息",
+      "逐元件逐版本比对判定增/拆/换/不变",
+      "汇总变更计数并返回头部/版本/矩阵"
+    ]
+  },
+  {
+    "no": 57,
+    "name": "searchMainSn",
+    "line": "L1501",
+    "desc": "装配主件 SN 下拉联想查询",
+    "steps": [
+      "归一化 keyword 与 limit（上限 100）",
+      "有关键字则按 main_sn 模糊匹配",
+      "联 material 带出名称与规格",
+      "按创建时间倒序返回至多 limit 条"
+    ]
+  },
+  {
+    "no": 58,
+    "name": "queryCustomReports",
+    "line": "L2578",
+    "desc": "自定义报表分页列表，支持编号/名称模糊查询",
+    "steps": [
+      "buildConditions 组装 report_code/report_name like 条件",
+      "pagedQuery 按 id DESC 分页",
+      "返回编号/名称/SQL/审计字段与总数"
+    ]
+  },
+  {
+    "no": 59,
+    "name": "createCustomReport",
+    "line": "L2593",
+    "desc": "新增自定义报表，强制 SELECT 并 EXPLAIN 预校验 SQL",
+    "steps": [
+      "校验编号/名称/SQL 必填",
+      "正则 /^\\s*SELECT\\b/i 拦截非查询语句",
+      "EXPLAIN 预校验 SQL 语法（不执行数据查询）",
+      "校验 report_code 唯一",
+      "db.insert 写 custom_report 表（create_by 自动注入）"
+    ]
+  },
+  {
+    "no": 60,
+    "name": "getCustomReportData",
+    "line": "L2625",
+    "desc": "执行报表 SQL 取列名与数据行（上限 1000 行）",
+    "steps": [
+      "按 id 查 custom_report 取 sql_text",
+      "若 SQL 含 LIMIT 则将行数覆盖为 1000，否则追加 LIMIT 1000",
+      "db.pool.query 执行并取 [rows, fields]",
+      "字段名映射为 columns 数组返回"
+    ]
+  },
+  {
+    "no": 61,
+    "name": "deleteCustomReports",
+    "line": "L2660",
+    "desc": "批量/单条删除自定义报表",
+    "steps": [
+      "兼容 ids 数组或单个 id",
+      "校验存在性，未找到返回错误",
+      "DELETE FROM custom_report WHERE id IN (...)",
+      "返回实际删除条数"
+    ]
+  },
+  {
+    "no": 62,
+    "name": "updateCustomReport",
+    "line": "L2683",
+    "desc": "修改报表名称与 SQL，报表编号不可改；SQL 同样校验",
+    "steps": [
+      "校验 id 存在",
+      "report_name 非空校验",
+      "sql_text 走 SELECT 正则 + EXPLAIN 校验",
+      "动态拼 SET，强制写 update_by/update_time",
+      "UPDATE custom_report 提交"
+    ]
+  }
+];
 
-  /* ---------------- 47 个消息分支 ---------------- */
+  /* ---------------- 59 个消息分支 ---------------- */
   var BRANCHES = [
-    { n: 1,  action: 'login',              input: '{ username, password }', biz: 'auth',    composite: false, ifaces: ['login'],                                                  senders: ['app（根实例）'] },
-    { n: 2,  action: 'logout',             input: '忽略',                  biz: 'auth',    composite: false, ifaces: ['logout'],                                                 senders: ['app（根实例）'] },
-    { n: 3,  action: 'checkSession',       input: '忽略',                  biz: 'auth',    composite: false, ifaces: ['getSession'],                                             senders: ['app（根实例）'] },
-    { n: 4,  action: 'scan',               input: '条码字符串',            biz: 'scan',     composite: true,  ifaces: ['checkBatch', 'queryMaterial'],                            senders: ['page-scan'] },
-    { n: 5,  action: 'getInspectItems',    input: '物料号',                biz: 'scan',     composite: false, ifaces: ['getInspectItems'],                                        senders: ['page-scan'] },
-    { n: 6,  action: 'createInspection',   input: '对象',                  biz: 'scan',     composite: false, ifaces: ['createInspection'],                                      senders: ['page-scan'] },
-    { n: 7,  action: 'queryInspectionList',input: '对象',                  biz: 'record',   composite: false, ifaces: ['queryInspectionList'],                                    senders: ['page-records'] },
-    { n: 8,  action: 'getInspectionDetail',input: 'SN 字符串',             biz: 'record',   composite: false, ifaces: ['getInspectionDetail'],                                    senders: ['page-record-detail'] },
-    { n: 9,  action: 'updateInspectionDetail', input: '对象',              biz: 'record',   composite: false, ifaces: ['updateInspectionDetail'],                                 senders: ['page-record-detail'] },
-    { n: 10, action: 'deleteInspectionRecords', input: '{ ids }',          biz: 'record',   composite: false, ifaces: ['deleteInspectionRecords'],                                senders: ['page-records'] },
-    { n: 11, action: 'queryInspectionHistory', input: '{ batch_no }',      biz: 'record',   composite: false, ifaces: ['queryInspectionHistory'],                                 senders: ['page-record-detail'] },
-    { n: 12, action: 'getInspectionHistoryVersion', input: '{ record_id, version_no }', biz: 'record', composite: false, ifaces: ['getInspectionHistoryVersion'],                 senders: ['page-record-detail'] },
-    { n: 13, action: 'queryAssembleList',  input: '对象',                  biz: 'record',   composite: false, ifaces: ['queryAssembleList'],                                    senders: ['page-assemble-records'] },
-    { n: 14, action: 'getAssembleDetail',  input: 'SN 字符串',             biz: 'record',   composite: false, ifaces: ['getAssembleDetail'],                                    senders: ['page-assemble-detail'] },
-    { n: 15, action: 'updateAssembleDetail', input: '对象',                biz: 'record',   composite: false, ifaces: ['updateAssembleDetail'],                                   senders: ['page-assemble-detail'] },
-    { n: 16, action: 'deleteAssembleRecords', input: '{ ids }',            biz: 'record',   composite: false, ifaces: ['deleteAssembleRecords'],                                  senders: ['page-assemble-records'] },
-    { n: 17, action: 'queryAssembleHistory', input: '{ main_sn }',         biz: 'record',   composite: false, ifaces: ['queryAssembleHistory'],                                   senders: ['page-assemble-detail'] },
-    { n: 18, action: 'getAssembleHistoryVersion', input: '{ record_id, version_no }', biz: 'record', composite: false, ifaces: ['getAssembleHistoryVersion'],                     senders: ['page-assemble-detail'] },
-    { n: 19, action: 'createAssemble',     input: '对象',                  biz: 'assemble', composite: false, ifaces: ['createAssemble'],                                       senders: ['page-assemble'] },
-    { n: 20, action: 'scanMainSn',         input: 'SN 字符串',             biz: 'assemble', composite: true,  ifaces: ['checkAssemble', 'queryMaterial', 'checkMainMaterial'],     senders: ['page-assemble'] },
-    { n: 21, action: 'scanComponentSn',    input: '{ sn, parent_material_id }', biz: 'assemble', composite: true, ifaces: ['checkComponentSn', 'queryMaterial', 'checkComponentInspection', 'checkComponentBom'], senders: ['page-assemble', 'page-assemble-detail'] },
-    { n: 22, action: 'queryInspectItems',  input: '对象',                  biz: 'base',     composite: false, ifaces: ['queryInspectItems'],                                      senders: ['page-inspect-item', 'page-rule-add'] },
-    { n: 23, action: 'createInspectItem',  input: '对象',                  biz: 'base',     composite: false, ifaces: ['createInspectItem'],                                      senders: ['page-item-add'] },
-    { n: 24, action: 'updateInspectItem',  input: '对象',                  biz: 'base',     composite: false, ifaces: ['updateInspectItem'],                                      senders: ['page-inspect-item'] },
-    { n: 25, action: 'queryMaterials',     input: '对象',                  biz: 'base',     composite: false, ifaces: ['queryMaterials'],                                        senders: ['page-material', 'page-bom-detail', 'page-bom-add', 'page-barcode-print'] },
-    { n: 26, action: 'createMaterial',     input: '对象',                  biz: 'base',     composite: false, ifaces: ['createMaterial'],                                        senders: ['page-material-add'] },
-    { n: 27, action: 'updateMaterial',     input: '对象',                  biz: 'base',     composite: false, ifaces: ['updateMaterial'],                                        senders: ['page-material'] },
-    { n: 28, action: 'getRuleCodes',       input: '忽略',                  biz: 'base',     composite: false, ifaces: ['getRuleCodes'],                                          senders: ['page-material', 'page-material-add'] },
-    { n: 29, action: 'queryInspectRules',  input: '对象',                  biz: 'base',     composite: false, ifaces: ['queryInspectRules'],                                      senders: ['page-rule'] },
-    { n: 30, action: 'getInspectRuleDetail', input: 'id 或 rule_code',     biz: 'base',     composite: false, ifaces: ['getInspectRuleDetail'],                                   senders: ['page-rule-detail'] },
-    { n: 31, action: 'updateInspectRule',  input: '对象',                  biz: 'base',     composite: false, ifaces: ['updateInspectRule'],                                      senders: ['page-rule-detail'] },
-    { n: 32, action: 'createInspectRule',  input: '对象',                  biz: 'base',     composite: false, ifaces: ['createInspectRule'],                                      senders: ['page-rule-add'] },
-    { n: 33, action: 'queryBomParentList', input: '对象',                  biz: 'base',     composite: false, ifaces: ['queryBomParentList'],                                     senders: ['page-bom'] },
-    { n: 34, action: 'getBomDetail',       input: '{ parent_material_id }', biz: 'base',    composite: false, ifaces: ['getBomDetail'],                                          senders: ['page-bom-detail'] },
-    { n: 35, action: 'updateBomDetail',    input: '对象',                  biz: 'base',     composite: false, ifaces: ['updateBomDetail'],                                       senders: ['page-bom-detail'] },
-    { n: 36, action: 'queryBomHistory',    input: '{ parent_material_id }', biz: 'base',    composite: false, ifaces: ['queryBomHistory'],                                       senders: ['page-bom-detail'] },
-    { n: 37, action: 'getBomHistoryVersion', input: '{ parent_material_id, version_no }', biz: 'base', composite: false, ifaces: ['getBomHistoryVersion'],                        senders: ['page-bom-detail'] },
-    { n: 38, action: 'createBom',          input: '对象',                  biz: 'base',     composite: false, ifaces: ['createBom'],                                             senders: ['page-bom-add'] },
-    { n: 39, action: 'importInspectItems', input: '{ fileData }',          biz: 'imports',  composite: false, ifaces: ['importInspectItems'],                                     senders: ['page-inspect-item'] },
-    { n: 40, action: 'importInspectRules', input: '{ fileData }',          biz: 'imports',  composite: false, ifaces: ['importInspectRules'],                                     senders: ['page-rule'] },
-    { n: 41, action: 'importMaterials',    input: '{ fileData }',          biz: 'imports',  composite: false, ifaces: ['importMaterials'],                                        senders: ['page-material'] },
-    { n: 42, action: 'importBom',          input: '{ fileData }',          biz: 'imports',  composite: false, ifaces: ['importBom'],                                              senders: ['page-bom'] },
-    { n: 43, action: 'getBarcodeRule',     input: '忽略',                  biz: 'barcode',  composite: false, ifaces: ['getBarcodeRule'],                                       senders: ['page-barcode-format', 'page-barcode-print'] },
-    { n: 44, action: 'updateBarcodeRule',  input: '对象',                  biz: 'barcode',  composite: false, ifaces: ['updateBarcodeRule'],                                     senders: ['page-barcode-format'] },
-    { n: 45, action: 'recordSnSerial',     input: '对象',                  biz: 'barcode',  composite: false, ifaces: ['recordSnSerial'],                                        senders: ['page-barcode-print'] },
-    { n: 46, action: 'querySnArchive',     input: '对象',                  biz: 'barcode',  composite: false, ifaces: ['querySnArchive'],                                        senders: ['page-barcode-archive'] },
-    { n: 47, action: 'getSerialMap',       input: '[{ material_id, sn_date }]', biz: 'barcode', composite: false, ifaces: ['getSerialMap'],                                       senders: ['page-barcode-print'] }
-  ];
+  {
+    "n": 1,
+    "action": "login",
+    "input": "{ username, password }",
+    "biz": "auth",
+    "composite": false,
+    "ifaces": [
+      "login"
+    ],
+    "senders": [
+      "app（根实例）"
+    ]
+  },
+  {
+    "n": 2,
+    "action": "logout",
+    "input": "忽略 token",
+    "biz": "auth",
+    "composite": false,
+    "ifaces": [
+      "logout"
+    ],
+    "senders": [
+      "app（根实例）"
+    ]
+  },
+  {
+    "n": 3,
+    "action": "checkSession",
+    "input": "忽略（用 token）",
+    "biz": "auth",
+    "composite": false,
+    "ifaces": [
+      "getSession"
+    ],
+    "senders": [
+      "app（根实例）"
+    ]
+  },
+  {
+    "n": 4,
+    "action": "scan",
+    "input": "条码字符串",
+    "biz": "scan",
+    "composite": true,
+    "ifaces": [
+      "checkBatch",
+      "queryMaterial"
+    ],
+    "senders": [
+      "page-scan"
+    ]
+  },
+  {
+    "n": 5,
+    "action": "getInspectItems",
+    "input": "物料号",
+    "biz": "scan",
+    "composite": false,
+    "ifaces": [
+      "getInspectItems"
+    ],
+    "senders": [
+      "page-scan"
+    ]
+  },
+  {
+    "n": 6,
+    "action": "createInspection",
+    "input": "{ material_id, batch_no, items[] }",
+    "biz": "scan",
+    "composite": false,
+    "ifaces": [
+      "createInspection"
+    ],
+    "senders": [
+      "page-scan"
+    ]
+  },
+  {
+    "n": 7,
+    "action": "queryInspectionList",
+    "input": "查询对象",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "queryInspectionList"
+    ],
+    "senders": [
+      "page-records"
+    ]
+  },
+  {
+    "n": 8,
+    "action": "getInspectionDetail",
+    "input": "batch_no 字符串",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "getInspectionDetail"
+    ],
+    "senders": [
+      "page-record-detail"
+    ]
+  },
+  {
+    "n": 9,
+    "action": "updateInspectionDetail",
+    "input": "{ batch_no, items[], process_result }",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "updateInspectionDetail"
+    ],
+    "senders": [
+      "page-record-detail"
+    ]
+  },
+  {
+    "n": 10,
+    "action": "queryInspectItems",
+    "input": "查询对象",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryInspectItems"
+    ],
+    "senders": [
+      "page-inspect-item",
+      "page-rule-add"
+    ]
+  },
+  {
+    "n": 11,
+    "action": "createInspectItem",
+    "input": "{ item_id, item_name }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "createInspectItem"
+    ],
+    "senders": [
+      "page-item-add"
+    ]
+  },
+  {
+    "n": 12,
+    "action": "importInspectItems",
+    "input": "{ fileData }",
+    "biz": "imports",
+    "composite": false,
+    "ifaces": [
+      "importInspectItems"
+    ],
+    "senders": [
+      "page-inspect-item"
+    ]
+  },
+  {
+    "n": 13,
+    "action": "importInspectRules",
+    "input": "{ fileData }",
+    "biz": "imports",
+    "composite": false,
+    "ifaces": [
+      "importInspectRules"
+    ],
+    "senders": [
+      "page-rule"
+    ]
+  },
+  {
+    "n": 14,
+    "action": "importMaterials",
+    "input": "{ fileData }",
+    "biz": "imports",
+    "composite": false,
+    "ifaces": [
+      "importMaterials"
+    ],
+    "senders": [
+      "page-material"
+    ]
+  },
+  {
+    "n": 15,
+    "action": "importBom",
+    "input": "{ fileData }",
+    "biz": "imports",
+    "composite": false,
+    "ifaces": [
+      "importBom"
+    ],
+    "senders": [
+      "page-bom"
+    ]
+  },
+  {
+    "n": 16,
+    "action": "getBarcodeRule",
+    "input": "忽略",
+    "biz": "barcode",
+    "composite": false,
+    "ifaces": [
+      "getBarcodeRule"
+    ],
+    "senders": [
+      "page-barcode-format",
+      "page-barcode-print",
+      "page-barcode-archive"
+    ]
+  },
+  {
+    "n": 17,
+    "action": "updateBarcodeRule",
+    "input": "14 个版式字段",
+    "biz": "barcode",
+    "composite": false,
+    "ifaces": [
+      "updateBarcodeRule"
+    ],
+    "senders": [
+      "page-barcode-format"
+    ]
+  },
+  {
+    "n": 18,
+    "action": "recordSnSerial",
+    "input": "{ sn, material_id, sn_date, serial_no }",
+    "biz": "barcode",
+    "composite": false,
+    "ifaces": [
+      "recordSnSerial"
+    ],
+    "senders": [
+      "page-barcode-print"
+    ]
+  },
+  {
+    "n": 19,
+    "action": "querySnArchive",
+    "input": "查询对象",
+    "biz": "barcode",
+    "composite": false,
+    "ifaces": [
+      "querySnArchive"
+    ],
+    "senders": [
+      "page-barcode-archive"
+    ]
+  },
+  {
+    "n": 20,
+    "action": "getSerialMap",
+    "input": "[{ material_id, sn_date }]",
+    "biz": "barcode",
+    "composite": false,
+    "ifaces": [
+      "getSerialMap"
+    ],
+    "senders": [
+      "page-barcode-print"
+    ]
+  },
+  {
+    "n": 21,
+    "action": "deleteInspectionRecords",
+    "input": "{ ids[] } 或 { id }",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "deleteInspectionRecords"
+    ],
+    "senders": [
+      "page-records"
+    ]
+  },
+  {
+    "n": 22,
+    "action": "deleteAssembleRecords",
+    "input": "{ ids[] } 或 { id }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "deleteAssembleRecords"
+    ],
+    "senders": [
+      "page-assemble-records"
+    ]
+  },
+  {
+    "n": 23,
+    "action": "queryAssembleHistory",
+    "input": "{ main_sn } 或 { record_id }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "queryAssembleHistory"
+    ],
+    "senders": [
+      "page-assemble-detail"
+    ]
+  },
+  {
+    "n": 24,
+    "action": "getAssembleHistoryVersion",
+    "input": "{ record_id, version_no }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "getAssembleHistoryVersion"
+    ],
+    "senders": [
+      "page-assemble-detail"
+    ]
+  },
+  {
+    "n": 25,
+    "action": "queryBomVersions",
+    "input": "主件料号",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryBomVersions"
+    ],
+    "senders": []
+  },
+  {
+    "n": 26,
+    "action": "checkMainMaterial",
+    "input": "料号 或 { mid, bom_version }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "checkMainMaterial"
+    ],
+    "senders": [
+      "page-assemble-detail"
+    ]
+  },
+  {
+    "n": 27,
+    "action": "checkComponentBom",
+    "input": "[主件料号, 元件料号, 版本]",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "checkComponentBom"
+    ],
+    "senders": []
+  },
+  {
+    "n": 28,
+    "action": "queryMaterials",
+    "input": "查询对象",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryMaterials"
+    ],
+    "senders": [
+      "page-material",
+      "page-bom-detail",
+      "page-bom-add",
+      "page-barcode-print",
+      "page-yield-analysis"
+    ]
+  },
+  {
+    "n": 29,
+    "action": "createMaterial",
+    "input": "{ material_id, material_name }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "createMaterial"
+    ],
+    "senders": [
+      "page-material-add"
+    ]
+  },
+  {
+    "n": 30,
+    "action": "updateMaterial",
+    "input": "{ material_id, 待改字段 }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "updateMaterial"
+    ],
+    "senders": [
+      "page-material"
+    ]
+  },
+  {
+    "n": 31,
+    "action": "updateInspectItem",
+    "input": "{ item_id, 待改字段 }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "updateInspectItem"
+    ],
+    "senders": [
+      "page-inspect-item"
+    ]
+  },
+  {
+    "n": 32,
+    "action": "getRuleCodes",
+    "input": "忽略",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "getRuleCodes"
+    ],
+    "senders": [
+      "page-material",
+      "page-material-add"
+    ]
+  },
+  {
+    "n": 33,
+    "action": "queryInspectRules",
+    "input": "查询对象",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryInspectRules"
+    ],
+    "senders": [
+      "page-rule"
+    ]
+  },
+  {
+    "n": 34,
+    "action": "getInspectRuleDetail",
+    "input": "{ id } 或 { rule_code }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "getInspectRuleDetail"
+    ],
+    "senders": [
+      "page-rule-detail"
+    ]
+  },
+  {
+    "n": 35,
+    "action": "updateInspectRule",
+    "input": "{ id, items[] }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "updateInspectRule"
+    ],
+    "senders": [
+      "page-rule-detail"
+    ]
+  },
+  {
+    "n": 36,
+    "action": "createInspectRule",
+    "input": "{ rule_code, items[] }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "createInspectRule"
+    ],
+    "senders": [
+      "page-rule-add"
+    ]
+  },
+  {
+    "n": 37,
+    "action": "queryBomParentList",
+    "input": "查询对象",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryBomParentList"
+    ],
+    "senders": [
+      "page-bom"
+    ]
+  },
+  {
+    "n": 38,
+    "action": "getBomDetail",
+    "input": "{ parent_material_id }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "getBomDetail"
+    ],
+    "senders": [
+      "page-bom-detail"
+    ]
+  },
+  {
+    "n": 39,
+    "action": "updateBomDetail",
+    "input": "{ parent_material_id, items[] }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "updateBomDetail"
+    ],
+    "senders": [
+      "page-bom-detail"
+    ]
+  },
+  {
+    "n": 40,
+    "action": "queryBomHistory",
+    "input": "{ parent_material_id }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryBomHistory"
+    ],
+    "senders": [
+      "page-bom-detail"
+    ]
+  },
+  {
+    "n": 41,
+    "action": "getBomHistoryVersion",
+    "input": "{ parent_material_id, version_no }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "getBomHistoryVersion"
+    ],
+    "senders": [
+      "page-bom-detail"
+    ]
+  },
+  {
+    "n": 42,
+    "action": "createBom",
+    "input": "{ parent_material_id, items[] }",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "createBom"
+    ],
+    "senders": [
+      "page-bom-add"
+    ]
+  },
+  {
+    "n": 43,
+    "action": "createAssemble",
+    "input": "{ main_sn, components[] }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "createAssemble"
+    ],
+    "senders": [
+      "page-assemble"
+    ]
+  },
+  {
+    "n": 44,
+    "action": "queryAssembleList",
+    "input": "查询对象",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "queryAssembleList"
+    ],
+    "senders": [
+      "page-assemble-records"
+    ]
+  },
+  {
+    "n": 45,
+    "action": "getAssembleDetail",
+    "input": "main_sn 字符串",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "getAssembleDetail"
+    ],
+    "senders": [
+      "page-assemble-detail"
+    ]
+  },
+  {
+    "n": 46,
+    "action": "updateAssembleDetail",
+    "input": "{ main_sn, components[], bom_version }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "updateAssembleDetail"
+    ],
+    "senders": [
+      "page-assemble-detail"
+    ]
+  },
+  {
+    "n": 47,
+    "action": "queryInspectionHistory",
+    "input": "{ batch_no } 或 { record_id }",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "queryInspectionHistory"
+    ],
+    "senders": [
+      "page-record-detail"
+    ]
+  },
+  {
+    "n": 48,
+    "action": "getInspectionHistoryVersion",
+    "input": "{ record_id, version_no }",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "getInspectionHistoryVersion"
+    ],
+    "senders": [
+      "page-record-detail"
+    ]
+  },
+  {
+    "n": 49,
+    "action": "queryApiLogs",
+    "input": "查询对象",
+    "biz": "base",
+    "composite": false,
+    "ifaces": [
+      "queryApiLogs"
+    ],
+    "senders": [
+      "page-api-log"
+    ]
+  },
+  {
+    "n": 50,
+    "action": "queryYieldAnalysis",
+    "input": "{ material_id, date_start, date_end }",
+    "biz": "record",
+    "composite": false,
+    "ifaces": [
+      "queryYieldAnalysis"
+    ],
+    "senders": [
+      "page-yield-analysis"
+    ]
+  },
+  {
+    "n": 51,
+    "action": "getAssembleAnalysis",
+    "input": "{ main_sn }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "getAssembleAnalysis"
+    ],
+    "senders": [
+      "page-assemble-analysis"
+    ]
+  },
+  {
+    "n": 52,
+    "action": "searchMainSn",
+    "input": "{ keyword, limit }",
+    "biz": "assemble",
+    "composite": false,
+    "ifaces": [
+      "searchMainSn"
+    ],
+    "senders": [
+      "page-assemble-analysis"
+    ]
+  },
+  {
+    "n": 53,
+    "action": "scanMainSn",
+    "input": "主件 SN 字符串",
+    "biz": "assemble",
+    "composite": true,
+    "ifaces": [
+      "checkAssemble",
+      "queryMaterial",
+      "checkMainMaterial"
+    ],
+    "senders": [
+      "page-assemble"
+    ]
+  },
+  {
+    "n": 54,
+    "action": "scanComponentSn",
+    "input": "{ sn, parent_material_id, bom_version }",
+    "biz": "assemble",
+    "composite": true,
+    "ifaces": [
+      "checkComponentSn",
+      "queryMaterial",
+      "checkComponentInspection",
+      "checkComponentBom"
+    ],
+    "senders": [
+      "page-assemble",
+      "page-assemble-detail"
+    ]
+  },
+  {
+    "n": 55,
+    "action": "queryCustomReports",
+    "input": "{ report_code?, report_name?, page, page_size }",
+    "biz": "report",
+    "composite": false,
+    "ifaces": [
+      "queryCustomReports"
+    ],
+    "senders": [
+      "page-custom-report"
+    ]
+  },
+  {
+    "n": 56,
+    "action": "createCustomReport",
+    "input": "{ report_code, report_name, sql_text }",
+    "biz": "report",
+    "composite": false,
+    "ifaces": [
+      "createCustomReport"
+    ],
+    "senders": [
+      "page-custom-report"
+    ]
+  },
+  {
+    "n": 57,
+    "action": "getCustomReportData",
+    "input": "{ id }",
+    "biz": "report",
+    "composite": false,
+    "ifaces": [
+      "getCustomReportData"
+    ],
+    "senders": [
+      "page-custom-report-viewer"
+    ]
+  },
+  {
+    "n": 58,
+    "action": "deleteCustomReports",
+    "input": "{ ids[] } 或 { id }",
+    "biz": "report",
+    "composite": false,
+    "ifaces": [
+      "deleteCustomReports"
+    ],
+    "senders": [
+      "page-custom-report"
+    ]
+  },
+  {
+    "n": 59,
+    "action": "updateCustomReport",
+    "input": "{ id, report_name?, sql_text? }",
+    "biz": "report",
+    "composite": false,
+    "ifaces": [
+      "updateCustomReport"
+    ],
+    "senders": [
+      "page-custom-report"
+    ]
+  }
+];
 
-  /* ---------------- 24 个前端组件（含 app.js 根实例） ---------------- */
+  /* ---------------- 30 个前端组件（含 app.js 根实例） ---------------- */
   var COMPONENTS = [
-    { name: 'app（根实例）',          line: 'app.js L130', sends: [['login', 'L156'], ['logout', 'L172'], ['checkSession', 'L184']],   note: '登录页/退出/会话恢复；token 注入每次请求；未登录仅渲染登录卡片' },
-    { name: 'page-guide',            line: 'L2',    sends: [],                                                                        note: '操作指导（无页签时的默认面板，纯展示）' },
-    { name: 'page-placeholder',      line: 'L31',   sends: [],                                                                        note: '通用占位页工厂' },
-    { name: 'page-scan',             line: 'L50',   sends: [['scan', 'L73'], ['getInspectItems', 'L84'], ['createInspection', 'L113']], note: '扫码检验（自动判定；提交成功后清空界面）' },
-    { name: 'page-records',          line: 'L239',  sends: [['queryInspectionList', 'L259'], ['deleteInspectionRecords', 'L276']],     note: '检验记录查询（批量删除 + 完成状态/进度）' },
-    { name: 'page-record-detail',    line: 'L351',  sends: [['getInspectionDetail', 'L384'], ['updateInspectionDetail', 'L406'], ['queryInspectionHistory', 'L436'], ['getInspectionHistoryVersion', 'L442']], note: '检验单明细（修改单身 + 历史版本弹层）' },
-    { name: 'vue-pager',             line: 'L584',  sends: [],                                                                        note: '通用分页控件（只 emit 事件，不发消息）' },
-    { name: 'page-base-data',        line: 'L611',  sends: [['action（动态）', '配置驱动'], ['importAction（动态）', '配置驱动']],      note: '基础资料通用页：查询 / 导入由配置驱动' },
-    { name: 'page-inspect-item',     line: 'L714',  sends: [['queryInspectItems', 'L726'], ['importInspectItems', 'L739'], ['updateInspectItem', 'L748']], note: '检验项目列表（行内修改 + 导入）' },
-    { name: 'page-item-add',         line: 'L826',  sends: [['createInspectItem', 'L844']],                                          note: '新增检验项目' },
-    { name: 'page-material',         line: 'L897',  sends: [['getRuleCodes', 'L910'], ['queryMaterials', 'L914'], ['importMaterials', 'L932'], ['updateMaterial', 'L952']], note: '物料列表（行内修改 + 导入 + 规则多选）' },
-    { name: 'page-material-add',     line: 'L1057', sends: [['getRuleCodes', 'L1070'], ['createMaterial', 'L1081']],                  note: '新增物料（含检验规则下拉多选）' },
-    { name: 'page-rule',             line: 'L1172', sends: [['queryInspectRules', 'L1184'], ['importInspectRules', 'L1199']],         note: '检验规则列表（默认全量 + 导入，无删除）' },
-    { name: 'page-rule-add',         line: 'L1253', sends: [['queryInspectItems', 'L1271'], ['createInspectRule', 'L1330']],          note: '新增检验规则（含标准值 / 标准区间）' },
-    { name: 'page-rule-detail',      line: 'L1413', sends: [['getInspectRuleDetail', 'L1427'], ['updateInspectRule', 'L1440']],       note: '检验规则详情（单头 + 明细行内编辑）' },
-    { name: 'page-bom',              line: 'L1561', sends: [['queryBomParentList', 'L1572'], ['importBom', 'L1584']],                 note: 'BOM 列表（按主件聚合 + 导入）' },
-    { name: 'page-bom-detail',       line: 'L1633', sends: [['getBomDetail', 'L1656'], ['updateBomDetail', 'L1687'], ['queryMaterials', 'L1697'], ['queryBomHistory', 'L1713'], ['getBomHistoryVersion', 'L1720']], note: 'BOM 明细（元件行内编辑 + 历史版本）' },
-    { name: 'page-bom-add',          line: 'L1842', sends: [['queryMaterials', 'L1857'], ['createBom', 'L1902']],                     note: '新增 BOM' },
-    { name: 'page-assemble',         line: 'L1970', sends: [['scanMainSn', 'L1994'], ['scanComponentSn', 'L2030'], ['createAssemble', 'L2063']], note: '扫码装配（BOM 槽位全量展开）' },
-    { name: 'page-assemble-records', line: 'L2154', sends: [['queryAssembleList', 'L2174'], ['deleteAssembleRecords', 'L2191']],      note: '装配记录查询（批量删除）' },
-    { name: 'page-assemble-detail',  line: 'L2265', sends: [['getAssembleDetail', 'L2333'], ['scanComponentSn', 'L2380'], ['updateAssembleDetail', 'L2406'], ['queryAssembleHistory', 'L2437'], ['getAssembleHistoryVersion', 'L2444']], note: '装配单明细（修改/补扫 + 历史版本）' },
-    { name: 'page-barcode-format',   line: 'L2588', sends: [['getBarcodeRule', 'L2600'], ['updateBarcodeRule', 'L2611']],             note: '条码格式维护（全局唯一）' },
-    { name: 'page-barcode-print',    line: 'L2690', sends: [['queryMaterials', 'L2710'], ['getSerialMap', 'L2721'], ['getBarcodeRule', 'L2734'], ['recordSnSerial', 'L2805']], note: '条码批量打印（数量列 + 流水推进 + 写档案）' },
-    { name: 'page-barcode-archive',  line: 'L2889', sends: [['querySnArchive', 'L2903']],                                             note: '条码档案多维模糊查询' }
-  ];
+  {
+    "name": "app（根实例）",
+    "line": "app.js L130",
+    "sends": [
+      [
+        "login",
+        "L156"
+      ],
+      [
+        "logout",
+        "L172"
+      ],
+      [
+        "checkSession",
+        "L184"
+      ]
+    ],
+    "note": "登录页/退出/会话恢复；token 注入每次请求；未登录仅渲染登录卡片"
+  },
+  {
+    "name": "page-guide",
+    "line": 2,
+    "sends": [],
+    "note": "无页签时的业务链路总览与操作指引（纯展示）"
+  },
+  {
+    "name": "page-placeholder",
+    "line": 150,
+    "sends": [],
+    "note": "通用占位页，显示功能开发中提示"
+  },
+  {
+    "name": "page-scan",
+    "line": 169,
+    "sends": [
+      [
+        "scan",
+        "L193"
+      ],
+      [
+        "getInspectItems",
+        "L204"
+      ],
+      [
+        "createInspection",
+        "L234"
+      ]
+    ],
+    "note": "扫码检验（自动判定；提交成功后清空界面）"
+  },
+  {
+    "name": "page-records",
+    "line": 366,
+    "sends": [
+      [
+        "queryInspectionList",
+        "L386"
+      ],
+      [
+        "deleteInspectionRecords",
+        "L403"
+      ]
+    ],
+    "note": "检验记录查询（组合筛选 + 批量删除）"
+  },
+  {
+    "name": "page-record-detail",
+    "line": 484,
+    "sends": [
+      [
+        "getInspectionDetail",
+        "L539"
+      ],
+      [
+        "updateInspectionDetail",
+        "L561"
+      ],
+      [
+        "queryInspectionHistory",
+        "L592"
+      ],
+      [
+        "getInspectionHistoryVersion",
+        "L598"
+      ]
+    ],
+    "note": "检验单明细（修改单身 + 历史版本对比）"
+  },
+  {
+    "name": "vue-pager",
+    "line": 761,
+    "sends": [],
+    "note": "通用分页控件（只 emit 事件，不发消息）"
+  },
+  {
+    "name": "page-base-data",
+    "line": 788,
+    "sends": [
+      [
+        "action（动态）",
+        "L804"
+      ],
+      [
+        "importAction（动态）",
+        "L830"
+      ]
+    ],
+    "note": "配置驱动的基础资料通用页，当前未被任何页面实例化"
+  },
+  {
+    "name": "page-inspect-item",
+    "line": 891,
+    "sends": [
+      [
+        "queryInspectItems",
+        "L903"
+      ],
+      [
+        "importInspectItems",
+        "L916"
+      ],
+      [
+        "updateInspectItem",
+        "L925"
+      ]
+    ],
+    "note": "检验项目列表（行内批量修改 + Excel 导入）"
+  },
+  {
+    "name": "page-item-add",
+    "line": 1003,
+    "sends": [
+      [
+        "createInspectItem",
+        "L1021"
+      ]
+    ],
+    "note": "新增检验项目表单"
+  },
+  {
+    "name": "page-material",
+    "line": 1074,
+    "sends": [
+      [
+        "getRuleCodes",
+        "L1089"
+      ],
+      [
+        "queryMaterials",
+        "L1093"
+      ],
+      [
+        "importMaterials",
+        "L1128"
+      ],
+      [
+        "updateMaterial",
+        "L1148"
+      ]
+    ],
+    "note": "物料列表（行内修改 + 导入 + 检验规则多选）"
+  },
+  {
+    "name": "page-material-add",
+    "line": 1277,
+    "sends": [
+      [
+        "getRuleCodes",
+        "L1290"
+      ],
+      [
+        "createMaterial",
+        "L1301"
+      ]
+    ],
+    "note": "新增物料表单（检验规则下拉多选）"
+  },
+  {
+    "name": "page-rule",
+    "line": 1392,
+    "sends": [
+      [
+        "queryInspectRules",
+        "L1404"
+      ],
+      [
+        "importInspectRules",
+        "L1419"
+      ]
+    ],
+    "note": "检验规则列表（查询 + Excel 导入）"
+  },
+  {
+    "name": "page-rule-add",
+    "line": 1473,
+    "sends": [
+      [
+        "queryInspectItems",
+        "L1491"
+      ],
+      [
+        "createInspectRule",
+        "L1550"
+      ]
+    ],
+    "note": "新增检验规则（选项目并填标准值与区间）"
+  },
+  {
+    "name": "page-rule-detail",
+    "line": 1633,
+    "sends": [
+      [
+        "getInspectRuleDetail",
+        "L1647"
+      ],
+      [
+        "updateInspectRule",
+        "L1660"
+      ]
+    ],
+    "note": "检验规则详情（单头与明细行内编辑）"
+  },
+  {
+    "name": "page-bom",
+    "line": 1781,
+    "sends": [
+      [
+        "queryBomParentList",
+        "L1792"
+      ],
+      [
+        "importBom",
+        "L1804"
+      ]
+    ],
+    "note": "BOM 主件列表（按主件聚合 + 导入）"
+  },
+  {
+    "name": "page-bom-detail",
+    "line": 1857,
+    "sends": [
+      [
+        "getBomDetail",
+        "L1880"
+      ],
+      [
+        "updateBomDetail",
+        "L1911"
+      ],
+      [
+        "queryMaterials",
+        "L1921"
+      ],
+      [
+        "queryBomHistory",
+        "L1937"
+      ],
+      [
+        "getBomHistoryVersion",
+        "L1944"
+      ]
+    ],
+    "note": "BOM 明细（元件行内编辑 + 历史版本）"
+  },
+  {
+    "name": "page-bom-add",
+    "line": 2066,
+    "sends": [
+      [
+        "queryMaterials",
+        "L2081"
+      ],
+      [
+        "createBom",
+        "L2126"
+      ]
+    ],
+    "note": "新增 BOM（选择主件与元件并填用量）"
+  },
+  {
+    "name": "page-assemble",
+    "line": 2194,
+    "sends": [
+      [
+        "scanMainSn",
+        "L2218"
+      ],
+      [
+        "scanComponentSn",
+        "L2254"
+      ],
+      [
+        "createAssemble",
+        "L2287"
+      ]
+    ],
+    "note": "扫码装配（主件与元件扫码校验后提交）"
+  },
+  {
+    "name": "page-assemble-records",
+    "line": 2378,
+    "sends": [
+      [
+        "queryAssembleList",
+        "L2398"
+      ],
+      [
+        "deleteAssembleRecords",
+        "L2415"
+      ]
+    ],
+    "note": "装配记录查询（组合筛选 + 批量删除）"
+  },
+  {
+    "name": "page-assemble-detail",
+    "line": 2483,
+    "sends": [
+      [
+        "getAssembleDetail",
+        "L2554"
+      ],
+      [
+        "checkMainMaterial",
+        "L2572"
+      ],
+      [
+        "scanComponentSn",
+        "L2669"
+      ],
+      [
+        "updateAssembleDetail",
+        "L2696"
+      ],
+      [
+        "queryAssembleHistory",
+        "L2729"
+      ],
+      [
+        "getAssembleHistoryVersion",
+        "L2736"
+      ]
+    ],
+    "note": "装配单明细（补扫/切换 BOM 版本 + 历史版本）"
+  },
+  {
+    "name": "page-barcode-format",
+    "line": 2894,
+    "sends": [
+      [
+        "getBarcodeRule",
+        "L2906"
+      ],
+      [
+        "updateBarcodeRule",
+        "L2917"
+      ]
+    ],
+    "note": "条码版式参数维护（全局唯一 id=1）"
+  },
+  {
+    "name": "page-barcode-print",
+    "line": 2996,
+    "sends": [
+      [
+        "queryMaterials",
+        "L3016"
+      ],
+      [
+        "getSerialMap",
+        "L3027"
+      ],
+      [
+        "getBarcodeRule",
+        "L3040"
+      ],
+      [
+        "recordSnSerial",
+        "L3111"
+      ],
+      [
+        "getSerialMap",
+        "L3142"
+      ]
+    ],
+    "note": "条码批量打印（流水推进 + 写档案）"
+  },
+  {
+    "name": "page-barcode-archive",
+    "line": 3195,
+    "sends": [
+      [
+        "querySnArchive",
+        "L3210"
+      ],
+      [
+        "getBarcodeRule",
+        "L3228"
+      ]
+    ],
+    "note": "条码档案查询（多维模糊 + 装配追溯）"
+  },
+  {
+    "name": "page-api-log",
+    "line": 3329,
+    "sends": [
+      [
+        "queryApiLogs",
+        "L3343"
+      ]
+    ],
+    "note": "接口调用日志查询（用户/接口/入出参/耗时）"
+  },
+  {
+    "name": "page-arch",
+    "line": 3439,
+    "sends": [],
+    "note": "系统架构页，动态加载 diagram.js 与 flat.js 渲染"
+  },
+  {
+    "name": "page-yield-analysis",
+    "line": 3500,
+    "sends": [
+      [
+        "queryMaterials",
+        "L3547"
+      ],
+      [
+        "queryYieldAnalysis",
+        "L3582"
+      ]
+    ],
+    "note": "良率分析报表（按物料与时间统计项目良率）"
+  },
+  {
+    "name": "page-assemble-analysis",
+    "line": 3741,
+    "sends": [
+      [
+        "getAssembleAnalysis",
+        "L3774"
+      ],
+      [
+        "searchMainSn",
+        "L3799"
+      ]
+    ],
+    "note": "装配分析报表（元件逐版本变更矩阵）"
+  },
+  {
+    "name": "page-custom-report",
+    "line": 3977,
+    "sends": [
+      [
+        "queryCustomReports",
+        "L4012"
+      ],
+      [
+        "createCustomReport",
+        "L4055"
+      ],
+      [
+        "deleteCustomReports",
+        "L4070"
+      ],
+      [
+        "updateCustomReport",
+        "L4062"
+      ]
+    ],
+    "note": "自定义报表列表（查询 + 新增/修改/批量删除，SQL 保存时后端 EXPLAIN 校验）"
+  },
+  {
+    "name": "page-custom-report-viewer",
+    "line": 4154,
+    "sends": [
+      [
+        "getCustomReportData",
+        "L4168"
+      ]
+    ],
+    "note": "自定义报表数据展示（动态列名 + 数据行 + 导出 Excel）"
+  }
+];
 
-  /* ---------------- 15 张数据库表 ---------------- */
+  /* ---------------- 16 张数据库表 ---------------- */
   var TABLES = [
     { name: 'user', comment: '用户表（登录认证）', fields: [
       ['username', 'varchar(255)', 0], ['password', 'varchar(255)', 0], ['realname', 'varchar(255)', 0] ] },
@@ -208,7 +2150,10 @@
       ['serial_x', 'int', 0], ['serial_y', 'int', 0], ['serial_font', 'int', 0], ['updated_time', 'datetime', 0] ] },
     { name: 'sn_serial', comment: '条码流水/档案表', fields: [
       ['id', 'bigint', 1], ['sn', 'varchar(50)', 0], ['material_id', 'varchar(20)', 0], ['sn_date', 'date', 0],
-      ['serial_no', 'int', 0], ['created_time', 'datetime', 0] ] }
+      ['serial_no', 'int', 0], ['created_time', 'datetime', 0] ] },
+    { name: 'custom_report', comment: '自定义报表表（SQL 模板与执行）', fields: [
+      ['id', 'bigint', 1], ['report_code', 'varchar(50)', 0], ['report_name', 'varchar(200)', 0], ['sql_text', 'text', 0],
+      ['create_by', 'varchar(50)', 0], ['created_time', 'datetime', 0], ['update_by', 'varchar(50)', 0], ['update_time', 'datetime', 0] ] }
   ];
 
   /* ---------------- 索引 ---------------- */
@@ -269,7 +2214,7 @@
     els.branches = {}; els.ifaces = {}; els.comps = {}; els.tables = {};
 
     /* 层1 前端 SPA */
-    var b1 = band('前端 SPA', 'web/ · Vue 2.7（CDN，无构建）', '#7c3aed', '23 个组件 + app.js');
+    var b1 = band('前端 SPA', 'web/ · Vue 2.7（无构建）', '#7c3aed', '30 个组件 + app.js');
     COMPONENTS.forEach(function (c) {
       var chip = el('span', 'chip', c.name);
       chip.title = c.note + '（' + c.line + '）';
@@ -278,8 +2223,8 @@
       els.comps[c.name] = chip; b1.chips.appendChild(chip);
     });
 
-    /* 层2 http.js 47 分支 */
-    var b2 = band('消息路由层', 'http.js · WebSocket switch(action) + 登录鉴权', '#1565c0', '47 个 action 分支');
+    /* 层2 http.js 59 分支 */
+    var b2 = band('消息路由层', 'http.js · WebSocket switch(action) + 登录鉴权', '#1565c0', '59 个 action 分支');
     BRANCHES.forEach(function (b) {
       var chip = el('span', 'chip', b.action + (b.composite ? ' ★' : ''));
       chip.style.borderLeft = '3px solid ' + bizColor(b.biz);
@@ -291,8 +2236,8 @@
     });
     host.appendChild(b1.el); host.appendChild(b2.el);
 
-    /* 层3 server.js 51 接口 */
-    var b3 = band('业务层', 'server.js · 51 个导出接口', '#0d9488', '51 个接口 + 8 个内部辅助函数');
+    /* 层3 server.js 62 接口 */
+    var b3 = band('业务层', 'server.js · 62 个导出接口', '#0d9488', '62 个接口 + 8 个内部辅助函数');
     IFACES.forEach(function (i) {
       var chip = el('span', 'chip', i.name);
       chip.title = '接口 ' + i.no + '（' + i.line + '）：' + i.desc;
@@ -308,7 +2253,7 @@
     });
 
     /* 层5 MySQL */
-    var b5 = band('数据库', 'MySQL · qmes 库', '#db2777', '15 张表');
+    var b5 = band('数据库', 'MySQL · qmes 库', '#db2777', '16 张表');
     TABLES.forEach(function (t) {
       var chip = el('span', 'chip', t.name);
       chip.title = t.comment;
@@ -594,7 +2539,7 @@
   /* ---------------- 工具栏 ---------------- */
   function renderFilters() {
     var host = document.getElementById('filters');
-    var all = el('button', 'fbtn on', '全部 (47)');
+    var all = el('button', 'fbtn on', '全部 (59)');
     all.addEventListener('click', function () { setBiz('all'); });
     host.appendChild(all);
     Object.keys(BIZ).forEach(function (k) {

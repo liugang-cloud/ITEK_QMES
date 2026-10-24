@@ -23,21 +23,23 @@ window.renderArchFlat = function () {
     { label: '框架/通用', items: ['app（根实例）', 'page-guide', 'page-placeholder', 'vue-pager', 'page-base-data'] },
     { label: '扫码检验', items: ['page-scan'] },
     { label: '检验记录', items: ['page-records', 'page-record-detail'] },
-    { label: '扫码装配', items: ['page-assemble', 'page-assemble-records', 'page-assemble-detail'] },
+    { label: '扫码装配', items: ['page-assemble', 'page-assemble-records', 'page-assemble-detail', 'page-assemble-analysis'] },
     { label: '基础资料', items: ['page-inspect-item', 'page-item-add', 'page-material', 'page-material-add', 'page-rule', 'page-rule-add', 'page-rule-detail'] },
     { label: 'BOM', items: ['page-bom', 'page-bom-detail', 'page-bom-add'] },
-    { label: '条码管理', items: ['page-barcode-format', 'page-barcode-print', 'page-barcode-archive'] }
+    { label: '条码管理', items: ['page-barcode-format', 'page-barcode-print', 'page-barcode-archive'] },
+    { label: '系统/分析', items: ['page-arch', 'page-api-log', 'page-yield-analysis'] }
   ];
   var IFACE_GROUPS = [
     { label: '登录鉴权', items: ['login', 'getSession', 'logout'] },
     { label: '扫码检验', items: ['queryMaterial', 'checkBatch', 'getInspectItems', 'createInspection'] },
-    { label: '检验记录', items: ['queryInspectionList', 'getInspectionDetail', 'updateInspectionDetail', 'deleteInspectionRecords', 'queryInspectionHistory', 'getInspectionHistoryVersion'] },
+    { label: '检验记录', items: ['queryInspectionList', 'getInspectionDetail', 'updateInspectionDetail', 'deleteInspectionRecords', 'queryInspectionHistory', 'getInspectionHistoryVersion', 'queryYieldAnalysis'] },
     { label: '项目/规则', items: ['queryInspectItems', 'queryInspectRules', 'getInspectRuleDetail', 'updateInspectRule', 'createInspectItem', 'updateInspectItem', 'createInspectRule', 'getRuleCodes'] },
     { label: '物料', items: ['queryMaterials', 'createMaterial', 'updateMaterial'] },
-    { label: 'BOM', items: ['queryBomParentList', 'getBomDetail', 'updateBomDetail', 'queryBomHistory', 'getBomHistoryVersion', 'createBom'] },
-    { label: '扫码装配', items: ['checkAssemble', 'checkMainMaterial', 'checkComponentSn', 'checkComponentBom', 'checkComponentInspection', 'createAssemble', 'queryAssembleList', 'getAssembleDetail', 'updateAssembleDetail', 'deleteAssembleRecords', 'queryAssembleHistory', 'getAssembleHistoryVersion'] },
+    { label: 'BOM', items: ['queryBomParentList', 'getBomDetail', 'updateBomDetail', 'queryBomHistory', 'getBomHistoryVersion', 'queryBomVersions', 'createBom'] },
+    { label: '扫码装配', items: ['checkAssemble', 'checkMainMaterial', 'checkComponentSn', 'checkComponentBom', 'checkComponentInspection', 'createAssemble', 'queryAssembleList', 'getAssembleDetail', 'updateAssembleDetail', 'deleteAssembleRecords', 'queryAssembleHistory', 'getAssembleHistoryVersion', 'searchMainSn', 'getAssembleAnalysis'] },
     { label: 'Excel 导入', items: ['importInspectItems', 'importInspectRules', 'importMaterials', 'importBom'] },
-    { label: '条码管理', items: ['getBarcodeRule', 'updateBarcodeRule', 'recordSnSerial', 'querySnArchive', 'getSerialMap'] }
+    { label: '条码管理', items: ['getBarcodeRule', 'updateBarcodeRule', 'recordSnSerial', 'querySnArchive', 'getSerialMap'] },
+    { label: '系统/日志', items: ['writeApiLog', 'queryApiLogs'] }
   ];
   var TABLE_GROUPS = [
     { label: '用户', items: ['user'] },
@@ -133,7 +135,7 @@ window.renderArchFlat = function () {
   function renderLayers() {
     var host = document.getElementById('layers');
 
-    var b1 = band('① 前端组件层', 'web/ · Vue 2.7（CDN，无构建）', '#7c3aed', COMPONENTS.length + ' 个组件 + app.js');
+    var b1 = band('① 前端组件层', 'web/ · Vue 2.7（无构建）', '#7c3aed', (COMPONENTS.length - 1) + ' 个组件 + app.js 根实例');
     renderGroups(b1.chips, COMP_GROUPS, COMP_BY_NAME, function (row, c) {
       addChip(row, 'comp', c.name, c.name, compBizKey(c), false);
     });
@@ -145,7 +147,7 @@ window.renderArchFlat = function () {
     });
     host.appendChild(b2.el);
 
-    var b3 = band('③ 业务接口层', 'server.js · ' + IFACES.length + ' 个导出接口', '#0d9488', IFACES.length + ' 个接口 + 8 个内部辅助函数');
+    var b3 = band('③ 业务接口层', 'server.js · ' + IFACES.length + ' 个导出接口', '#0d9488', IFACES.length + ' 个接口');
     renderGroups(b3.chips, IFACE_GROUPS, IFACE_BY_NAME, function (row, i) {
       addChip(row, 'iface', i.name, i.name, null, false);
     });
@@ -309,6 +311,17 @@ window.renderArchFlat = function () {
       g4.appendChild(kv('行号', i.line, true));
       g4.appendChild(kv('作用', i.desc));
       c.appendChild(g4);
+      if (i.steps && i.steps.length) {
+        var g5 = group('程序流程（' + i.steps.length + ' 步）');
+        g5.className += ' steps-group';
+        i.steps.forEach(function (st, idx) {
+          var row = el('div', 'step-line');
+          row.appendChild(el('span', 'step-no', String(idx + 1)));
+          row.appendChild(el('span', 'step-text', st));
+          g5.appendChild(row);
+        });
+        c.appendChild(g5);
+      }
       appendChains(c, type, name);
 
     } else if (type === 'comp') {
@@ -389,8 +402,10 @@ window.renderArchFlat = function () {
     if (!sel) return;
     sel = null;
     paint();
-    document.getElementById('detail-empty').style.display = 'block';
-    document.getElementById('detail-body').style.display = 'none';
+    var de = document.getElementById('detail-empty');
+    var db = document.getElementById('detail-body');
+    if (de) de.style.display = 'block';
+    if (db) db.style.display = 'none';
   }
 
   /* 点击空白处（非 chip / 详情链接 / 详情面板）清除选中状态 —— 去重绑定 */

@@ -72,7 +72,11 @@ const PAGE_LABELS = {
   'page-barcode-archive': '条码档案',
   'page-barcode-format': '条码格式',
   'page-api-log': '日志管理',
-  'page-arch': '系统架构'
+  'page-arch': '系统架构',
+  'page-yield-analysis': '良率分析',
+  'page-assemble-analysis': '装配分析',
+  'page-custom-report': '自定义报表',
+  'page-custom-report-viewer': '报表数据'
 };
 
 // 列表页 → 该页签内可直接跳转的明细页（不新开页签）
@@ -124,6 +128,14 @@ new Vue({
           { key: 'page-barcode-print', label: '条码打印' },
           { key: 'page-barcode-archive', label: '条码档案' },
           { key: 'page-barcode-format', label: '条码格式' }
+        ]
+      },
+      {
+        title: '报表管理',
+        items: [
+          { key: 'page-yield-analysis', label: '良率分析' },
+          { key: 'page-assemble-analysis', label: '装配分析' },
+          { key: 'page-custom-report', label: '自定义报表' }
         ]
       },
       {

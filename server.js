@@ -226,7 +226,7 @@ function hasMeasured(item) {
 // 整单结论由明细判定，不采用入参 result
 // 事务写入 inspection_record + inspection_record_detail
 async function createInspection(data) {
-  const { material_id, batch_no, rule_code, inspect_date, inspector, create_by, remark, items = [] } = data;
+  const { material_id, batch_no, rule_code, inspect_date, inspector, create_by, remark, process_result = '接收', items = [] } = data;
 
   // 未录入的项目写 NULL 判定（不参与整单结论），已录入的按入参 is_pass
   const normalized = items.map(it => ({
@@ -240,8 +240,8 @@ async function createInspection(data) {
     await conn.beginTransaction();
 
     const [recordResult] = await conn.execute(
-      'INSERT INTO inspection_record (material_id, batch_no, rule_code, inspect_date, inspector, create_by, result, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [material_id, batch_no, rule_code || null, inspect_date || new Date(), inspector, create_by || null, finalResult, remark || null]
+      'INSERT INTO inspection_record (material_id, batch_no, rule_code, inspect_date, inspector, create_by, result, remark, process_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [material_id, batch_no, rule_code || null, inspect_date || new Date(), inspector, create_by || null, finalResult, remark || null, process_result || '接收']
     );
     const recordId = recordResult.insertId;
 
@@ -280,12 +280,14 @@ async function queryInspectionList(data) {
 
   let sql = `SELECT r.id, r.material_id, m.material_name, m.material_spec,
                     r.batch_no, r.rule_code, r.inspect_date, r.inspector,
-                    r.result, r.is_complete, r.remark, r.created_time,
+                    r.result, r.is_complete, r.remark, r.created_time, r.process_result,
                     (SELECT COUNT(*) FROM inspection_record_detail d
                       WHERE d.record_id = r.id
                         AND ((d.measured_val IS NOT NULL AND TRIM(d.measured_val) != '')
                           OR (d.measured_text IS NOT NULL AND TRIM(d.measured_text) != ''))) AS scanned_qty,
-                    (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id) AS required_qty
+                    (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id) AS required_qty,
+                    (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id AND d.is_pass = 1) AS pass_count,
+                    (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id AND d.is_pass IS NOT NULL) AS judged_total
              FROM inspection_record r
              LEFT JOIN material m ON m.material_id = r.material_id`;
   let countSql = 'SELECT COUNT(*) AS total FROM inspection_record r';
@@ -336,6 +338,7 @@ async function getInspectionDetail(sn) {
     `SELECT r.id, r.material_id, m.material_name, m.material_spec,
             r.batch_no, r.rule_code, r.inspect_date, r.inspector, r.create_by,
             r.result, r.is_complete, r.remark, r.created_time, r.update_by, r.update_time,
+            r.process_result,
             (SELECT COUNT(*) FROM inspection_record_detail d
               WHERE d.record_id = r.id
                 AND ((d.measured_val IS NOT NULL AND TRIM(d.measured_val) != '')
@@ -367,7 +370,7 @@ async function getInspectionDetail(sn) {
 // 入参: { batch_no, update_by, items: [{ id, measured_val, measured_text, is_pass, remark }] }
 // 按明细 id 更新对应单身；同时重算单头结论（全部单项合格=1，否则=0），并记录更新人员/更新时间
 async function updateInspectionDetail(data) {
-  const { batch_no, update_by, items = [] } = data;
+  const { batch_no, update_by, process_result, items = [] } = data;
   if (!batch_no) {
     return { success: false, message: '缺少检验单号' };
   }
@@ -377,15 +380,68 @@ async function updateInspectionDetail(data) {
   }
   const recordId = records[0].id;
 
+  // 预先读取当前明细（短路比对 + 历史归档共用，避免二次查询）
+  // 注意：查询在事务外进行，极端并发下历史归档可能用了略旧的快照，QMS 场景概率极低
+  const [oldDetails] = await db.pool.query(
+    `SELECT id, item_id, item_name, measured_val, measured_text, is_pass, remark, created_time
+     FROM inspection_record_detail WHERE record_id = ? ORDER BY id`, [recordId]
+  );
+
+  // === 短路优化：新旧明细 + process_result 完全一致则跳过修改 ===
+  {
+    const [headRows] = await db.pool.query(
+      'SELECT process_result FROM inspection_record WHERE id = ?', [recordId]
+    );
+    const currentProcessResult = headRows[0].process_result;
+
+    // 复刻 UPDATE 时的字段规范化口径（全部转 String，避免 number/string/null 类型错配）
+    const normVal = (v) => (v === undefined || v === null || v === '' ? '' : String(v).trim());
+    const normText = (t) => (t === undefined || t === null ? '' : String(t).trim());
+    const normRemark = (r) => (r === undefined || r === null ? '' : String(r).trim());
+    const normPass = (item) => {
+      // hasMeasured 口径：measured_val 或 measured_text 任一非空即视为已录入
+      const v = item.measured_val;
+      const hasV = v !== null && v !== undefined && String(v).trim() !== '';
+      const t = item.measured_text;
+      const hasT = t !== null && t !== undefined && String(t).trim() !== '';
+      const measured = hasV || hasT;
+      const p = measured ? (item.is_pass === null || item.is_pass === undefined ? 1 : item.is_pass) : null;
+      return p === null || p === undefined ? '' : String(p);
+    };
+
+    const oldMap = new Map(oldDetails.map(d => [d.id, d]));
+    let changed = false;
+    for (const it of items) {
+      if (!it.id) continue;
+      const old = oldMap.get(it.id);
+      if (!old) { changed = true; break; }
+      // 旧值也统一转 String，和规范化后的新值同口径
+      const oldVal = normVal(old.measured_val);
+      const oldText = normText(old.measured_text);
+      const oldPass = old.is_pass === null || old.is_pass === undefined ? '' : String(old.is_pass);
+      const oldRemark = normRemark(old.remark);
+      const newVal = normVal(it.measured_val);
+      const newText = normText(it.measured_text);
+      const newPass = normPass(it);
+      const newRemark = normRemark(it.remark);
+      if (oldVal !== newVal || oldText !== newText || oldPass !== newPass || oldRemark !== newRemark) {
+        changed = true; break;
+      }
+    }
+    const processSame = process_result === undefined || process_result === null ||
+                        process_result === currentProcessResult;
+
+    if (!changed && processSame) {
+      return { success: true, data: { record_id: recordId, no_change: true } };
+    }
+  }
+
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    // === 历史：把修改前的单身明细逐行存入历史表（平铺结构，与装配历史一致） ===
-    const [beforeDetails] = await conn.execute(
-      `SELECT id, item_id, item_name, measured_val, measured_text, is_pass, remark, created_time
-       FROM inspection_record_detail WHERE record_id = ? ORDER BY id`, [recordId]
-    );
+    // === 历史：复用事务外查询的 oldDetails 作为快照 ===
+    const beforeDetails = oldDetails;
     const [maxVerRow] = await conn.execute(
       'SELECT COALESCE(MAX(version_no), 0) AS max_v FROM inspection_record_history WHERE record_id = ?',
       [recordId]
@@ -436,8 +492,10 @@ async function updateInspectionDetail(data) {
     const isComplete = await calcInspectionComplete(conn, recordId);
 
     await conn.execute(
-      'UPDATE inspection_record SET result=?, is_complete=?, update_by=?, update_time=NOW() WHERE id=?',
-      [result, isComplete, update_by || null, recordId]
+      'UPDATE inspection_record SET result=?, is_complete=?, update_by=?, update_time=NOW()' +
+      (process_result !== undefined && process_result !== null ? ', process_result=?' : '') +
+      ' WHERE id=?',
+      [result, isComplete, update_by || null, ...(process_result !== undefined && process_result !== null ? [process_result] : []), recordId]
     );
 
     await conn.commit();
@@ -503,13 +561,22 @@ async function queryInspectItems(data) {
 // 接口7：查询物料（material）
 // 入参: { material_id, material_name, material_spec, inspect_category, is_active, page, page_size } 前四项模糊，is_active 精确
 async function queryMaterials(data) {
-  const { where, params } = buildConditions({
+  let { where, params } = buildConditions({
     material_id: ['material_id', 'like'],
     material_name: ['material_name', 'like'],
     material_spec: ['material_spec', 'like'],
     inspect_category: ['inspect_category', 'like'],
     is_active: ['is_active', 'eq']
   }, data);
+  // 检验大类多选：inspect_category 存的是逗号分隔的规则编码，用 FIND_IN_SET 做任一匹配
+  const cats = Array.isArray(data?.inspect_categories)
+    ? data.inspect_categories.map(c => String(c).trim()).filter(Boolean)
+    : [];
+  if (cats.length) {
+    where += (where ? ' AND ' : ' WHERE ') +
+      '(' + cats.map(() => 'FIND_IN_SET(?, inspect_category) > 0').join(' OR ') + ')';
+    params.push(...cats);
+  }
   return {
     success: true,
     data: await pagedQuery({
@@ -627,10 +694,24 @@ async function updateInspectRule(data) {
 
 // 接口：BOM主件列表（按主件聚合，一个主件一行）
 async function queryBomParentList(data) {
-  const { where, params } = buildConditions({
+  let { where, params } = buildConditions({
     parent_material_id: ['m.material_id', 'like'],
     parent_material_name: ['m.material_name', 'like']
   }, data);
+  // 元件料号 / 元件名称：查询包含该元件的主件 BOM
+  const compMaterial = String(data?.component_material || '').trim();
+  const compName = String(data?.component_name || '').trim();
+  if (compMaterial) {
+    where += (where ? ' AND ' : ' WHERE') +
+      ' EXISTS (SELECT 1 FROM bom b3 WHERE b3.parent_material_id = b.parent_material_id AND b3.component_material LIKE ?)';
+    params.push('%' + compMaterial + '%');
+  }
+  if (compName) {
+    where += (where ? ' AND ' : ' WHERE') +
+      ' EXISTS (SELECT 1 FROM bom b4 LEFT JOIN material cm4 ON cm4.material_id = b4.component_material' +
+      ' WHERE b4.parent_material_id = b.parent_material_id AND cm4.material_name LIKE ?)';
+    params.push('%' + compName + '%');
+  }
   return {
     success: true,
     data: await pagedQuery({
@@ -647,7 +728,8 @@ async function queryBomParentList(data) {
                   FROM bom_history
                   GROUP BY parent_material_id
                 ) h ON h.parent_material_id = b.parent_material_id`,
-      countSql: `SELECT COUNT(DISTINCT parent_material_id) AS total FROM bom b`,
+      countSql: `SELECT COUNT(DISTINCT b.parent_material_id) AS total FROM bom b
+                 LEFT JOIN material m ON m.material_id = b.parent_material_id`,
       where, params, orderBy: 'm.material_id', data, groupBy: 'm.material_id, m.material_name, m.material_spec, h.cur_ver'
     })
   };
@@ -689,15 +771,44 @@ async function updateBomDetail(data) {
   if (!parent_material_id) return { success: false, message: '缺少 parent_material_id' };
   if (!items || !Array.isArray(items)) return { success: false, message: '缺少 items 数组' };
 
+  // 预先读取当前 BOM 明细（短路比对 + 历史归档共用，避免二次查询）
+  // 注意：查询在事务外进行，极端并发下历史归档可能用了略旧的快照，QMS 场景概率极低
+  const [oldBom] = await db.pool.query(
+    'SELECT id, component_material, quantity, created_time FROM bom WHERE parent_material_id = ? ORDER BY id',
+    [parent_material_id]
+  );
+
+  // === 短路优化：新旧 BOM 明细完全一致则跳过修改 ===
+  {
+    const norm = (comp, qty) => ({
+      comp: comp == null ? '' : String(comp).trim(),
+      qty: Number(qty) || 1  // 与下面差量更新逻辑的默认值保持一致
+    });
+    const sortFn = (a, b) => (a.comp === b.comp ? a.qty - b.qty : a.comp.localeCompare(b.comp));
+
+    const normOld = oldBom.map(r => norm(r.component_material, r.quantity)).sort(sortFn);
+    // 新 items 按 component_material 去重后再比对，与下面 update 逻辑保持一致
+    const dedupNew = new Map();
+    items.forEach(it => {
+      const key = String(it.component_material || '').trim();
+      if (key && !dedupNew.has(key)) dedupNew.set(key, it.quantity);
+    });
+    const normNew = Array.from(dedupNew.entries()).map(([comp, qty]) => norm(comp, qty)).sort(sortFn);
+
+    if (JSON.stringify(normOld) === JSON.stringify(normNew)) {
+      return {
+        success: true,
+        data: { parent_material_id, count: items.length, no_change: true }
+      };
+    }
+  }
+
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    // === 1. 读取修改前 bom 数据（带 created_time 用于历史归档） ===
-    const [existing] = await conn.query(
-      'SELECT id, component_material, quantity, created_time FROM bom WHERE parent_material_id = ? ORDER BY id',
-      [parent_material_id]
-    );
+    // === 1. 历史归档：复用事务外查询的 oldBom ===
+    const existing = oldBom;
 
     // === 2. 归档修改前数据到 bom_history ===
     const [maxVerRow] = await conn.query(
@@ -838,21 +949,52 @@ async function checkAssemble(mainSn) {
 }
 
 // 接口11：校验物料是否为主件并返回BOM元件列表
-// 入参: 物料号字符串，查 bom 表中 parent_material_id=? 的所有元件
-async function checkMainMaterial(materialId) {
-  const rows = await db.query(
-    `SELECT b.component_material, m.material_name AS component_material_name,
-            b.quantity, b.id
-     FROM bom b
-     LEFT JOIN material m ON m.material_id = b.component_material
-     WHERE b.parent_material_id = ?
-     ORDER BY b.id`,
+// 入参: 物料号字符串，或 { mid, bom_version } 对象
+//   bom_version 有值 → 查 bom_history 指定版本
+//   bom_version 空值 → 查 bom 表（当前生效版本）
+async function checkMainMaterial(input, bomVersion = null) {
+  let materialId, bv;
+  if (input && typeof input === 'object') {
+    materialId = input.mid || input.material_id;
+    bv = input.bom_version ?? bomVersion;
+  } else {
+    materialId = input;
+    bv = bomVersion;
+  }
+  if (!materialId) return { success: false, message: '缺少物料号' };
+  // 先查 bom_history 最大 version_no，判断 bv 是否在 bom_history 范围内
+  const [maxHist] = await db.query(
+    `SELECT COALESCE(MAX(version_no), 0) AS m FROM bom_history WHERE parent_material_id = ?`,
     [materialId]
   );
-  if (rows.length === 0) {
-    return { success: false, message: `该物料不是主件: ${materialId}` };
+  const maxVersion = Number(maxHist.m);
+  let rows;
+  if (bv !== null && bv !== undefined && bv !== '' && bv !== 0 && Number(bv) <= maxVersion) {
+    rows = await db.query(
+      `SELECT b.component_material, m.material_name AS component_material_name,
+              m.material_spec AS component_material_spec, b.quantity, b.id
+       FROM bom_history b
+       LEFT JOIN material m ON m.material_id = b.component_material
+       WHERE b.parent_material_id = ? AND b.version_no = ?
+       ORDER BY b.id`,
+      [materialId, Number(bv)]
+    );
+  } else {
+    // bv 为空/0 或 bv 超过 bom_history 最大版本号 → 查 bom 表（当前生效版本）
+    rows = await db.query(
+      `SELECT b.component_material, m.material_name AS component_material_name,
+              m.material_spec AS component_material_spec, b.quantity, b.id
+       FROM bom b
+       LEFT JOIN material m ON m.material_id = b.component_material
+       WHERE b.parent_material_id = ?
+       ORDER BY b.id`,
+      [materialId]
+    );
   }
-  return { success: true, data: { parent_material_id: materialId, components: rows } };
+  if (rows.length === 0) {
+    return { success: false, message: `该物料不是主件或无BOM: ${materialId}` };
+  }
+  return { success: true, data: { parent_material_id: materialId, components: rows, bom_version: bv } };
 }
 
 // 接口12：元件SN查重
@@ -874,14 +1016,24 @@ async function checkComponentSn(componentSn, excludeRecordId) {
 }
 
 // 接口13：元件BOM验证
-// 入参: 主件料号, 元件料号，查 bom 表验证两者是否存在父子关系
-async function checkComponentBom(parentMaterialId, componentMaterialId) {
-  const rows = await db.query(
-    'SELECT id, quantity FROM bom WHERE parent_material_id = ? AND component_material = ?',
-    [parentMaterialId, componentMaterialId]
-  );
+// 入参: 主件料号, 元件料号, bomVersion（可选）
+//   bomVersion 有值 → 查 bom_history 指定版本
+//   bomVersion 空值 → 查 bom 表（当前生效版本）
+async function checkComponentBom(parentMaterialId, componentMaterialId, bomVersion = null) {
+  let rows;
+  if (bomVersion !== null && bomVersion !== undefined && bomVersion !== '') {
+    rows = await db.query(
+      'SELECT id, quantity FROM bom_history WHERE parent_material_id = ? AND component_material = ? AND version_no = ?',
+      [parentMaterialId, componentMaterialId, Number(bomVersion)]
+    );
+  } else {
+    rows = await db.query(
+      'SELECT id, quantity FROM bom WHERE parent_material_id = ? AND component_material = ?',
+      [parentMaterialId, componentMaterialId]
+    );
+  }
   if (rows.length === 0) {
-    return { success: false, message: `该物料不是另一个物料的元件: ${componentMaterialId}` };
+    return { success: false, message: `该物料不是 ${parentMaterialId}的元件: ${componentMaterialId}` };
   }
   return { success: true, data: { parent_material_id: parentMaterialId, component_material_id: componentMaterialId, quantity: rows[0].quantity } };
 }
@@ -980,14 +1132,22 @@ async function calcAssembleComplete(conn, recordId, mainMaterialId) {
 //   page, page_size                                  // 分页
 // }
 async function queryAssembleList(data) {
-  const { main_sn, main_material_id, operator, status, date_start, date_end, is_complete } = data;
+  const { main_sn, main_material_id, operator, status, date_start, date_end, is_complete,
+          component_sn, component_material } = data;
   const page = Math.max(1, Number(data.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(data.page_size) || 20));
 
   let sql = `SELECT r.id, r.main_sn, r.main_material_id, r.bom_version, m.material_name AS main_material_name,
+                    m.material_spec AS main_material_spec,
                     r.status, r.is_complete, r.assemble_date, r.operator, r.remark, r.created_time,
                     (SELECT COUNT(*) FROM assemble_record_detail d WHERE d.record_id = r.id AND d.component_sn IS NOT NULL AND d.component_sn != '') AS scanned_qty,
-                    (SELECT COALESCE(CAST(SUM(b.quantity) AS UNSIGNED), 0) FROM bom b WHERE b.parent_material_id = r.main_material_id) AS required_qty
+                    (SELECT COALESCE(CAST(SUM(b.quantity) AS UNSIGNED), 0) FROM bom_history b WHERE b.parent_material_id = r.main_material_id AND b.version_no = r.bom_version
+                      AND r.bom_version IS NOT NULL AND r.bom_version > 0
+                      AND r.bom_version <= (SELECT COALESCE(MAX(version_no), 0) FROM bom_history bh WHERE bh.parent_material_id = r.main_material_id))
+                    + (CASE WHEN r.bom_version IS NULL OR r.bom_version = 0
+                         OR r.bom_version > (SELECT COALESCE(MAX(version_no), 0) FROM bom_history bh WHERE bh.parent_material_id = r.main_material_id)
+                      THEN (SELECT COALESCE(CAST(SUM(b.quantity) AS UNSIGNED), 0) FROM bom b WHERE b.parent_material_id = r.main_material_id)
+                      ELSE 0 END) AS required_qty
              FROM assemble_record r
              LEFT JOIN material m ON m.material_id = r.main_material_id`;
   let countSql = 'SELECT COUNT(*) AS total FROM assemble_record r';
@@ -999,6 +1159,15 @@ async function queryAssembleList(data) {
   if (operator) { conditions.push('r.operator LIKE ?'); params.push(`%${operator}%`); }
   if (status !== undefined && status !== null && status !== '') { conditions.push('r.status = ?'); params.push(Number(status)); }
   if (is_complete !== undefined && is_complete !== null && is_complete !== '') { conditions.push('r.is_complete = ?'); params.push(Number(is_complete)); }
+  // 元件SN / 元件料号：查询包含该元件（单身）的装配单
+  if (component_sn) {
+    conditions.push('EXISTS (SELECT 1 FROM assemble_record_detail d2 WHERE d2.record_id = r.id AND d2.component_sn LIKE ?)');
+    params.push(`%${component_sn}%`);
+  }
+  if (component_material) {
+    conditions.push('EXISTS (SELECT 1 FROM assemble_record_detail d3 WHERE d3.record_id = r.id AND d3.component_material_id LIKE ?)');
+    params.push(`%${component_material}%`);
+  }
   if (date_start) { conditions.push('r.assemble_date >= ?'); params.push(date_start); }
   if (date_end) {
     const end = String(date_end);
@@ -1035,7 +1204,13 @@ async function getAssembleDetail(mainSn) {
     `SELECT r.id, r.main_sn, r.main_material_id, r.bom_version, m.material_name, m.material_spec,
             r.status, r.is_complete, r.assemble_date, r.operator, r.create_by, r.remark, r.created_time, r.update_by, r.update_time,
             (SELECT COUNT(*) FROM assemble_record_detail d WHERE d.record_id = r.id AND d.component_sn IS NOT NULL AND d.component_sn != '') AS scanned_qty,
-            (SELECT COALESCE(CAST(SUM(b.quantity) AS UNSIGNED), 0) FROM bom b WHERE b.parent_material_id = r.main_material_id) AS required_qty
+            (SELECT COALESCE(CAST(SUM(b.quantity) AS UNSIGNED), 0) FROM bom_history b WHERE b.parent_material_id = r.main_material_id AND b.version_no = r.bom_version
+              AND r.bom_version IS NOT NULL AND r.bom_version > 0
+              AND r.bom_version <= (SELECT COALESCE(MAX(version_no), 0) FROM bom_history bh WHERE bh.parent_material_id = r.main_material_id))
+            + (CASE WHEN r.bom_version IS NULL OR r.bom_version = 0
+                 OR r.bom_version > (SELECT COALESCE(MAX(version_no), 0) FROM bom_history bh WHERE bh.parent_material_id = r.main_material_id)
+              THEN (SELECT COALESCE(CAST(SUM(b.quantity) AS UNSIGNED), 0) FROM bom b WHERE b.parent_material_id = r.main_material_id)
+              ELSE 0 END) AS required_qty
      FROM assemble_record r
      LEFT JOIN material m ON m.material_id = r.main_material_id
      WHERE r.main_sn = ?`,
@@ -1048,16 +1223,86 @@ async function getAssembleDetail(mainSn) {
     'SELECT id, component_sn, component_material_id, created_time FROM assemble_record_detail WHERE record_id = ? ORDER BY id',
     [records[0].id]
   );
-  // 主件的 BOM 元件清单（供修改场景参考：显示元件名称、校验应扫数量）
-  const bom = await db.query(
-    `SELECT b.component_material, m.material_name AS component_material_name, b.quantity
-     FROM bom b
-     LEFT JOIN material m ON m.material_id = b.component_material
-     WHERE b.parent_material_id = ?
-     ORDER BY b.id`,
+  // 主件的 BOM 元件清单
+  const bomVersion = records[0].bom_version;
+  // 查 bom_history 最大 version_no，判断 bomVersion 是查 bom_history 还是 bom 表
+  const [maxHist] = await db.query(
+    `SELECT COALESCE(MAX(version_no), 0) AS m FROM bom_history WHERE parent_material_id = ?`,
     [records[0].main_material_id]
   );
-  return { success: true, data: { record: records[0], details, bom } };
+  const maxVersion = Number(maxHist.m);
+  let bom;
+  if (bomVersion && Number(bomVersion) <= maxVersion) {
+    bom = await db.query(
+      `SELECT b.component_material, m.material_name AS component_material_name,
+              m.material_spec AS component_material_spec, b.quantity
+       FROM bom_history b
+       LEFT JOIN material m ON m.material_id = b.component_material
+       WHERE b.parent_material_id = ? AND b.version_no = ?
+       ORDER BY b.id`,
+      [records[0].main_material_id, bomVersion]
+    );
+  } else {
+    bom = await db.query(
+      `SELECT b.component_material, m.material_name AS component_material_name,
+              m.material_spec AS component_material_spec, b.quantity
+       FROM bom b
+       LEFT JOIN material m ON m.material_id = b.component_material
+       WHERE b.parent_material_id = ?
+       ORDER BY b.id`,
+      [records[0].main_material_id]
+    );
+  }
+  // 该主件的所有 BOM 版本号（供前端下拉用）
+  // bom_history 的历史快照 + bom 表当前状态（如果 bom 表和 bom_history 最新版不一致，追加一个版本号）
+  const verList = await db.query(
+    `SELECT DISTINCT version_no FROM bom_history WHERE parent_material_id = ? ORDER BY version_no`,
+    [records[0].main_material_id]
+  );
+  const versions = verList.map(v => v.version_no);
+  // bom 表当前状态作为一个"虚拟"版本号 = MAX(version_no) + 1
+  // 如果 bom 表和 bom_history 最新版完全一致，不加这个虚拟版本
+  const maxVer = versions.length > 0 ? Math.max(...versions) : 0;
+  const curBom = await db.query(
+    `SELECT component_material, quantity FROM bom WHERE parent_material_id = ? ORDER BY component_material`,
+    [records[0].main_material_id]
+  );
+  const lastHist = await db.query(
+    `SELECT component_material, quantity FROM bom_history WHERE parent_material_id = ? AND version_no = ? ORDER BY component_material`,
+    [records[0].main_material_id, maxVer]
+  );
+  const sameAsLastHist = curBom.length === lastHist.length &&
+    curBom.every((c, i) => c.component_material === lastHist[i].component_material && String(c.quantity) === String(lastHist[i].quantity));
+  if (!sameAsLastHist && curBom.length > 0) {
+    versions.push(maxVer + 1);
+  }
+  versions.sort((a, b) => a - b);
+  return { success: true, data: { record: records[0], details, bom, bom_versions: versions } };
+}
+
+// 查询某主件的所有 BOM 版本号（供装配记录明细修改时切换版本用）
+async function queryBomVersions(parentMaterialId) {
+  if (!parentMaterialId) return { success: false, message: '缺少主件料号' };
+  const rows = await db.query(
+    `SELECT version_no, COUNT(*) AS component_count, MIN(origin_created_time) AS first_used
+     FROM bom_history WHERE parent_material_id = ?
+     GROUP BY version_no ORDER BY version_no`,
+    [parentMaterialId]
+  );
+  // 当前生效版本也作为一个选项（bom 表）
+  const cur = await db.query(
+    `SELECT COUNT(*) AS cnt FROM bom WHERE parent_material_id = ?`,
+    [parentMaterialId]
+  );
+  const list = rows.map(r => ({
+    version_no: r.version_no,
+    component_count: r.component_count,
+    first_used: r.first_used
+  }));
+  return { success: true, data: {
+    history_versions: list,
+    current_count: cur[0].cnt
+  }};
 }
 
 // 接口30：修改装配单明细（支持新增扫描元件 / 删除已扫元件）
@@ -1065,7 +1310,7 @@ async function getAssembleDetail(mainSn) {
 // 按「整单元件清单」做差量更新：清单中不存在的旧元件删除，新出现的元件插入；保留未变动的元件（保留原 created_time）
 // 同时记录更新人员 / 更新时间
 async function updateAssembleDetail(data) {
-  const { main_sn, update_by, components = [] } = data;
+  const { main_sn, update_by, bom_version, components = [] } = data;
   if (!main_sn) {
     return { success: false, message: '缺少主件SN' };
   }
@@ -1076,14 +1321,49 @@ async function updateAssembleDetail(data) {
   const recordId = records[0].id;
   const mainMaterialId = records[0].main_material_id;
 
+  // 预先读取当前明细（短路比对 + 历史归档共用，避免二次查询）
+  // 注意：查询在事务外进行，极端并发下历史归档可能用了略旧的快照，QMS 场景概率极低
+  const [oldDetails] = await db.pool.query(
+    'SELECT id, component_sn, component_material_id, created_time FROM assemble_record_detail WHERE record_id = ?',
+    [recordId]
+  );
+
+  // === 短路优化：新旧明细 + bom_version 完全一致则跳过修改 ===
+  {
+    const [headRows] = await db.pool.query(
+      'SELECT bom_version FROM assemble_record WHERE id = ?',
+      [recordId]
+    );
+    const currentBomVersion = headRows[0].bom_version;
+
+    const norm = (sn, mid) => ({
+      sn: (sn == null ? '' : String(sn).trim()),
+      mid: mid == null ? '' : String(mid).trim()
+    });
+    const sortFn = (a, b) => (a.sn === b.sn ? a.mid.localeCompare(b.mid) : a.sn.localeCompare(b.sn));
+
+    const normOld = oldDetails.map(r => norm(r.component_sn, r.component_material_id)).sort(sortFn);
+    const normNew = components.map(c => norm(c.component_sn, c.component_material_id)).sort(sortFn);
+
+    const detailsSame = JSON.stringify(normOld) === JSON.stringify(normNew);
+    const bomSame = bom_version === undefined || bom_version === null ||
+                    Number(bom_version) === Number(currentBomVersion);
+
+    if (detailsSame && bomSame) {
+      return {
+        success: true,
+        data: { record_id: recordId, count: components.length, is_complete: null, no_change: true }
+      };
+    }
+  }
+
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
 
     // === 历史：把修改前的单身明细逐行存入历史表（平铺结构，非快照JSON） ===
-    const [beforeDetails] = await conn.execute(
-      'SELECT id, component_sn, component_material_id, created_time FROM assemble_record_detail WHERE record_id = ?', [recordId]
-    );
+    // oldDetails 已在事务外查询完毕，直接复用
+    const beforeDetails = oldDetails;
     const [maxVerRow] = await conn.execute(
       'SELECT COALESCE(MAX(version_no), 0) AS max_v FROM assemble_record_history WHERE record_id = ?',
       [recordId]
@@ -1150,10 +1430,13 @@ async function updateAssembleDetail(data) {
 
     // 重算装配完成状态，连同更新人/时间写回单头
     const isComplete = await calcAssembleComplete(conn, recordId, mainMaterialId);
-    await conn.execute(
-      'UPDATE assemble_record SET update_by=?, update_time=NOW(), is_complete=? WHERE id=?',
-      [update_by || null, isComplete, recordId]
-    );
+    const updateRecordSql = 'UPDATE assemble_record SET update_by=?, update_time=NOW(), is_complete=?' +
+      (bom_version !== undefined && bom_version !== null ? ', bom_version=?' : '') +
+      ' WHERE id=?';
+    const updateParams = [update_by || null, isComplete];
+    if (bom_version !== undefined && bom_version !== null) updateParams.push(Number(bom_version));
+    updateParams.push(recordId);
+    await conn.execute(updateRecordSql, updateParams);
 
     await conn.commit();
     return { success: true, data: { record_id: recordId, count: components.length, version: nextVersion, is_complete: isComplete } };
@@ -1210,6 +1493,207 @@ async function getAssembleHistoryVersion(data) {
       details
     }
   };
+}
+
+// 接口：模糊查询装配单主件SN（供下拉联想用）
+// 入参: { keyword }  空关键字返回最近 50 条
+// 返回: [{ main_sn, main_material_id, material_name, assemble_date, is_complete }]
+async function searchMainSn(data) {
+  const kw = String(data?.keyword || '').trim();
+  const limit = Math.min(100, Math.max(1, Number(data?.limit) || 50));
+  const sql = `SELECT r.main_sn, r.main_material_id, m.material_name, m.material_spec,
+                      r.assemble_date, r.is_complete
+               FROM assemble_record r LEFT JOIN material m ON m.material_id = r.main_material_id
+               ${kw ? 'WHERE r.main_sn LIKE ?' : ''}
+               ORDER BY r.created_time DESC LIMIT ?`;
+  const params = kw ? [`%${kw}%`, limit] : [limit];
+  const [rows] = await db.pool.query(sql, params);
+  return { success: true, data: rows };
+}
+
+// 接口：装配分析报表
+// 入参: { main_sn } 装配单SN
+// 返回: 主件信息 + 元件变更矩阵（每行一个元件，每列一个版本，单元格带变更类型）
+async function getAssembleAnalysis(data) {
+  const mainSn = String(data?.main_sn || '').trim();
+  if (!mainSn) return { success: false, message: '缺少主件SN' };
+
+  // 1. 装配单主件信息
+  const [records] = await db.pool.query(
+    `SELECT r.id, r.main_sn, r.main_material_id, r.bom_version, r.assemble_date, r.operator,
+            r.create_by, r.created_time, r.update_by, r.update_time, r.is_complete, r.status,
+            m.material_name, m.material_spec,
+            (SELECT COUNT(*) FROM assemble_record_detail d WHERE d.record_id = r.id AND d.component_sn IS NOT NULL AND d.component_sn != '') AS scanned_qty,
+            (SELECT COUNT(*) FROM assemble_record_detail d WHERE d.record_id = r.id) AS total_slots
+     FROM assemble_record r
+     LEFT JOIN material m ON m.material_id = r.main_material_id
+     WHERE r.main_sn = ?`,
+    [mainSn]
+  );
+  if (!records.length) return { success: false, message: `装配单不存在: ${mainSn}` };
+  const record = records[0];
+
+  // 2. 版本列表（含历史版本 + 当前最新明细作为"当前版"）
+  const [verGroups] = await db.pool.query(
+    `SELECT version_no, MIN(change_time) AS change_time, MAX(change_by) AS change_by, COUNT(*) AS detail_count
+     FROM assemble_record_history WHERE record_id = ?
+     GROUP BY version_no ORDER BY version_no ASC`,
+    [record.id]
+  );
+
+  // 3. 每个历史版本的明细
+  const [histDetails] = await db.pool.query(
+    `SELECT version_no, component_material_id, component_sn
+     FROM assemble_record_history
+     WHERE record_id = ? AND detail_id IS NOT NULL
+     ORDER BY version_no, component_material_id`,
+    [record.id]
+  );
+
+  // 4. 当前最新明细（assemble_record_detail）
+  const [curDetails] = await db.pool.query(
+    `SELECT component_material_id, component_sn FROM assemble_record_detail WHERE record_id = ? ORDER BY id`,
+    [record.id]
+  );
+
+  // 5. 元件表（料号 + 品名 + 规格）
+  const allMids = new Set();
+  histDetails.forEach(d => allMids.add(d.component_material_id));
+  curDetails.forEach(d => allMids.add(d.component_material_id));
+  // bom 表可能有当前版本的元件（bom_version 超出 bom_history.max 时）
+  const [maxHist] = await db.query(
+    'SELECT COALESCE(MAX(version_no), 0) AS m FROM bom_history WHERE parent_material_id = ?',
+    [record.main_material_id]
+  );
+  const maxBV = Number(maxHist.m);
+  let bomRows;
+  if (record.bom_version && Number(record.bom_version) <= maxBV) {
+    bomRows = await db.query(
+      `SELECT component_material, material_name, material_spec FROM bom_history b
+       LEFT JOIN material m ON m.material_id = b.component_material
+       WHERE b.parent_material_id = ? AND b.version_no = ?`,
+      [record.main_material_id, record.bom_version]
+    );
+  } else {
+    bomRows = await db.query(
+      `SELECT component_material, material_name, material_spec FROM bom b
+       LEFT JOIN material m ON m.material_id = b.component_material
+       WHERE b.parent_material_id = ?`,
+      [record.main_material_id]
+    );
+  }
+  bomRows.forEach(b => allMids.add(b.component_material));
+
+  const midList = [...allMids];
+  const [matMap] = await db.pool.query(
+    `SELECT material_id, material_name, material_spec FROM material WHERE material_id IN (${midList.map(() => '?').join(',')})`,
+    midList
+  );
+  const matInfo = {};
+  matMap.forEach(m => { matInfo[m.material_id] = m; });
+
+  // 6. 组装版本矩阵
+  // 版本列表：历史版本 + "当前"（最新明细）
+  const versions = verGroups.map(v => ({
+    version_no: v.version_no,
+    label: 'V' + v.version_no,
+    date: v.change_time ? String(v.change_time).slice(0, 10) : '',
+    time: v.change_time ? String(v.change_time).slice(11, 19) : '',
+    change_by: v.change_by,
+    is_current: false
+  }));
+  versions.push({
+    version_no: 'cur',
+    label: '当前',
+    date: record.update_time ? String(record.update_time).slice(0, 10) :
+         (record.created_time ? String(record.created_time).slice(0, 10) : ''),
+    time: record.update_time ? String(record.update_time).slice(11, 19) :
+         (record.created_time ? String(record.created_time).slice(11, 19) : ''),
+    change_by: record.update_by || record.create_by,
+    is_current: true
+  });
+
+  // 7. 每个版本 → { [component_material_id]: component_sn }
+  const versionData = {};
+  verGroups.forEach(v => {
+    versionData[v.version_no] = {};
+  });
+  histDetails.forEach(d => {
+    versionData[d.version_no][d.component_material_id] = d.component_sn;
+  });
+  versionData['cur'] = {};
+  curDetails.forEach(d => {
+    versionData['cur'][d.component_material_id] = d.component_sn;
+  });
+
+  // 8. 构建行：每个元件一行，比较相邻版本差异
+  const rows = [];
+  for (const mid of midList) {
+    const info = matInfo[mid] || {};
+    const row = {
+      component_material_id: mid,
+      component_material_name: info.material_name || '',
+      component_material_spec: info.material_spec || '',
+      cells: []
+    };
+    // 前一版本的 SN（用于比较变更类型）
+    let prevSn = null;
+    for (let vi = 0; vi < versions.length; vi++) {
+      const v = versions[vi];
+      const curSn = versionData[v.version_no] != null ? versionData[v.version_no][mid] : undefined;
+      // 如果这个版本没有该元件（undefined），显示空
+      const hasThisComp = curSn !== undefined;
+      const displaySn = curSn || null;
+
+      // 变更类型：与前一个有该元件的版本比较
+      let change_type = 'same'; // same | add | remove | replace | none
+      if (!hasThisComp) {
+        change_type = 'none'; // 该版本没有这个元件
+      } else if (prevSn === null || prevSn === undefined) {
+        if (displaySn) change_type = 'add';      // 前空后有SN → 新扫
+        else change_type = 'same';               // 前空后也空 → 无变化
+      } else if (!displaySn) {
+        change_type = 'remove';                  // 前有SN后空 → 拆卸
+      } else if (prevSn !== displaySn) {
+        change_type = 'replace';                 // 前后都有但不同 → 替换
+      } else {
+        change_type = 'same';                    // 相同
+      }
+      prevSn = displaySn;
+
+      row.cells.push({
+        version_no: v.version_no,
+        sn: displaySn,
+        change_type
+      });
+    }
+    rows.push(row);
+  }
+
+  // 9. 头部汇总统计
+  const change_summary = { add: 0, remove: 0, replace: 0 };
+  rows.forEach(r => r.cells.forEach(c => {
+    if (change_summary[c.change_type] != null) change_summary[c.change_type]++;
+  }));
+
+  const header = {
+    main_sn: record.main_sn,
+    main_material_id: record.main_material_id,
+    main_material_name: record.material_name || '',
+    main_material_spec: record.material_spec || '',
+    bom_version: record.bom_version,
+    assemble_date: record.assemble_date,
+    operator: record.operator,
+    is_complete: record.is_complete,
+    scanned_qty: record.scanned_qty,
+    total_slots: record.total_slots,
+    created_time: record.created_time,
+    update_time: record.update_time,
+    update_by: record.update_by,
+    history_count: verGroups.length
+  };
+
+  return { success: true, data: { header, versions, rows, change_summary } };
 }
 
 // 接口39：查询检验记录的历史版本列表（按版本聚合）
@@ -1813,7 +2297,22 @@ async function querySnArchive(data) {
     `SELECT COUNT(*) AS total FROM sn_serial s LEFT JOIN material m ON m.material_id = s.material_id ${w}`, params
   );
   const rows = await db.query(
-    `SELECT s.*, m.material_name FROM sn_serial s
+    `SELECT s.*, m.material_name,
+            CASE
+              WHEN EXISTS (SELECT 1 FROM bom b WHERE b.parent_material_id = s.material_id) THEN '主件'
+              WHEN EXISTS (SELECT 1 FROM bom b WHERE b.component_material = s.material_id) THEN '元件'
+              ELSE '-'
+            END AS part_type,
+            CASE WHEN EXISTS (SELECT 1 FROM inspection_record ir WHERE ir.batch_no = s.sn) THEN 1 ELSE 0 END AS has_inspection,
+            CASE WHEN EXISTS (SELECT 1 FROM assemble_record ar WHERE ar.main_sn = s.sn)
+                   OR EXISTS (SELECT 1 FROM assemble_record_detail ad WHERE ad.component_sn = s.sn) THEN 1 ELSE 0 END AS has_assembly,
+            COALESCE(
+              (SELECT ar2.main_sn FROM assemble_record ar2 WHERE ar2.main_sn = s.sn LIMIT 1),
+              (SELECT ar3.main_sn FROM assemble_record_detail ad3
+                 INNER JOIN assemble_record ar3 ON ar3.id = ad3.record_id
+                WHERE ad3.component_sn = s.sn LIMIT 1)
+            ) AS assembly_main_sn
+     FROM sn_serial s
      LEFT JOIN material m ON m.material_id = s.material_id
      ${w} ORDER BY s.id DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, (page - 1) * pageSize]
@@ -1885,6 +2384,91 @@ async function deleteAssembleRecords(data) {
   await db.query(`DELETE FROM assemble_record_detail WHERE record_id IN (${ph2})`, realIds);
   await db.query(`DELETE FROM assemble_record WHERE id IN (${ph2})`, realIds);
   return { success: true, data: { deleted: realIds.length } };
+}
+
+// 接口：良率分析报表
+// 入参: { material_id, date_start, date_end }
+// 返回: header(物料信息+汇总指标) + items(检验项目良率明细)
+async function queryYieldAnalysis(data = {}) {
+  const { material_id, date_start, date_end } = data;
+  if (!material_id) return { success: false, message: '请选择物料' };
+  if (!date_start || !date_end) return { success: false, message: '请选择时间范围' };
+
+  const start = String(date_start).slice(0, 10) + ' 00:00:00';
+  const end = String(date_end).slice(0, 10) + ' 23:59:59';
+
+  // 物料基础信息
+  const [mat] = await db.pool.query(
+    'SELECT material_id, material_name, material_spec FROM material WHERE material_id = ?',
+    [material_id]
+  );
+  if (!mat.length) return { success: false, message: '物料不存在' };
+
+  // 头部：检验单数量 + 平均良率 + 拒收数量
+  // 良率定义：每个检验单中 is_pass=1 的项目数 / is_pass 非空的项目数
+  // 平均良率 = 所有检验单良率的算术平均
+  const [summary] = await db.pool.query(
+    `SELECT COUNT(DISTINCT r.id) AS record_count,
+            AVG(record_pr.pass_rate) AS avg_yield
+     FROM inspection_record r
+     JOIN (
+       SELECT record_id,
+              SUM(CASE WHEN is_pass = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) AS pass_rate
+       FROM inspection_record_detail
+       WHERE is_pass IS NOT NULL
+       GROUP BY record_id
+     ) record_pr ON record_pr.record_id = r.id
+     WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ?`,
+    [material_id, start, end]
+  );
+  // 拒收数量（process_result='拒绝' 的检验单，不受明细关联影响）
+  const [reject] = await db.pool.query(
+    `SELECT COUNT(*) AS reject_count
+     FROM inspection_record r
+     WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ?
+       AND r.process_result = '拒绝'`,
+    [material_id, start, end]
+  );
+
+  // 检验项目明细
+  const [items] = await db.pool.query(
+    `SELECT d.item_id, d.item_name,
+            MAX(ri.standard_value) AS standard_value,
+            MAX(ri.standard_range) AS standard_range,
+            COUNT(*) AS check_count,
+            SUM(CASE WHEN d.is_pass = 1 THEN 1 ELSE 0 END) AS pass_count
+     FROM inspection_record_detail d
+     JOIN inspection_record r ON r.id = d.record_id
+       AND r.material_id = ?
+       AND r.inspect_date BETWEEN ? AND ?
+     LEFT JOIN inspection_rule_item ri ON ri.item_id = d.item_id
+       AND FIND_IN_SET(ri.rule_code, r.rule_code)
+     WHERE d.is_pass IS NOT NULL
+     GROUP BY d.item_id, d.item_name
+     ORDER BY check_count DESC`,
+    [material_id, start, end]
+  );
+
+  const header = {
+    material_id: mat[0].material_id,
+    material_name: mat[0].material_name,
+    material_spec: mat[0].material_spec,
+    record_count: summary[0].record_count || 0,
+    reject_count: reject[0].reject_count || 0,
+    avg_yield: summary[0].avg_yield ? Number((summary[0].avg_yield * 100).toFixed(2)) : 0
+  };
+
+  const itemList = items.map(it => ({
+    item_id: it.item_id,
+    item_name: it.item_name,
+    standard_value: it.standard_value || '',
+    standard_range: it.standard_range || '',
+    check_count: it.check_count,
+    pass_count: it.pass_count,
+    pass_rate: it.check_count ? Number(((it.pass_count / it.check_count) * 100).toFixed(2)) : 0
+  }));
+
+  return { success: true, data: { header, items: itemList } };
 }
 
 // 接口27：批量导入 BOM（Excel）
@@ -1989,6 +2573,136 @@ async function importBom(data) {
   }
 }
 
+// 自定义报表：分页查询列表
+async function queryCustomReports(data) {
+  const { where, params } = buildConditions({
+    report_code: ['report_code', 'like'],
+    report_name: ['report_name', 'like']
+  }, data);
+  return {
+    success: true,
+    data: await pagedQuery({
+      baseSql: 'SELECT id, report_code, report_name, sql_text, create_by, created_time, update_by, update_time FROM custom_report',
+      countSql: 'SELECT COUNT(*) AS total FROM custom_report',
+      where, params, orderBy: 'id DESC', data
+    })
+  };
+}
+
+// 自定义报表：新增（保存前用 EXPLAIN 校验 SQL 正确性，仅允许 SELECT）
+async function createCustomReport(data) {
+  const { report_code, report_name, sql_text, create_by } = data || {};
+  if (!report_code || !String(report_code).trim()) return { success: false, message: '请填写报表编号' };
+  if (!report_name || !String(report_name).trim()) return { success: false, message: '请填写报表名称' };
+  if (!sql_text || !String(sql_text).trim()) return { success: false, message: '请填写 SQL' };
+  const sql = String(sql_text).trim();
+  if (!/^\s*SELECT\b/i.test(sql)) return { success: false, message: '只允许 SELECT 查询语句' };
+  // 校验 SQL 语法（EXPLAIN 不实际执行查询，仅检查语法与执行计划）
+  try {
+    await db.pool.query(`EXPLAIN ${sql}`);
+  } catch (e) {
+    return { success: false, message: `SQL 校验失败：${e.message}` };
+  }
+  const code = report_code.trim();
+  const [exist] = await db.pool.query('SELECT id FROM custom_report WHERE report_code = ?', [code]);
+  if (exist.length) return { success: false, message: `报表编号已存在：${code}` };
+  const id = await db.insert('custom_report', {
+    report_code: code,
+    report_name: String(report_name).trim(),
+    sql_text: sql,
+    create_by: create_by || null
+  });
+  return { success: true, data: { id } };
+}
+
+// 自定义报表：执行报表 SQL 返回列名与数据（限制最多 1000 行）
+async function getCustomReportData(data) {
+  const { id } = data || {};
+  if (!id) return { success: false, message: '缺少报表ID' };
+  const [rows] = await db.pool.query(
+    'SELECT report_code, report_name, sql_text FROM custom_report WHERE id = ?', [id]
+  );
+  if (!rows.length) return { success: false, message: '报表不存在' };
+  const report = rows[0];
+  // 执行报表 SQL，并将结果行数限制在 1000 以内（若用户 SQL 已含 LIMIT 则上限覆盖）
+  let execSql = String(report.sql_text).trim().replace(/;\s*$/, '');
+  const limitRe = /\bLIMIT\s+(\d+)(?:\s*(?:,|OFFSET)\s*(\d+))?\s*$/i;
+  const m = execSql.match(limitRe);
+  if (m) {
+    const cap = (n) => Math.min(Number(n), 1000);
+    if (m[2] !== undefined) {
+      // LIMIT offset, count  /  LIMIT count OFFSET offset
+      execSql = execSql.replace(limitRe, `LIMIT ${m[1]}, ${cap(m[2])}`);
+    } else {
+      execSql = execSql.replace(limitRe, `LIMIT ${cap(m[1])}`);
+    }
+  } else {
+    execSql = `${execSql} LIMIT 1000`;
+  }
+  const [dataRows, fields] = await db.pool.query(execSql);
+  const columns = (fields || []).map(f => f.name);
+  return {
+    success: true,
+    data: {
+      report_code: report.report_code,
+      report_name: report.report_name,
+      columns,
+      rows: dataRows
+    }
+  };
+}
+
+// 自定义报表：批量删除
+// 入参: { ids: [id, ...] }  单条也支持：{ id: 5 }
+async function deleteCustomReports(data) {
+  let ids = [];
+  if (Array.isArray(data?.ids)) ids = data.ids;
+  else if (data?.id != null) ids = [data.id];
+  if (!ids.length) return { success: false, message: '未指定要删除的报表' };
+  const ph = ids.map(() => '?').join(',');
+  const exist = await db.query(`SELECT id FROM custom_report WHERE id IN (${ph})`, ids);
+  if (!exist.length) return { success: false, message: '未找到对应报表' };
+  const realIds = exist.map(r => r.id);
+  const ph2 = realIds.map(() => '?').join(',');
+  await db.query(`DELETE FROM custom_report WHERE id IN (${ph2})`, realIds);
+  return { success: true, data: { deleted: realIds.length } };
+}
+
+// 自定义报表：修改（报表名称与 SQL，报表编号不可改；SQL 同样需通过 EXPLAIN 校验且仅允许 SELECT）
+async function updateCustomReport(data) {
+  const { id, report_name, sql_text, update_by } = data || {};
+  if (!id) return { success: false, message: '缺少报表ID' };
+  const [rows] = await db.pool.query('SELECT id FROM custom_report WHERE id = ?', [id]);
+  if (!rows.length) return { success: false, message: '报表不存在' };
+
+  const sets = [];
+  const params = [];
+  if (report_name !== undefined) {
+    if (!String(report_name).trim()) return { success: false, message: '报表名称不能为空' };
+    sets.push('report_name = ?');
+    params.push(String(report_name).trim());
+  }
+  if (sql_text !== undefined) {
+    const sql = String(sql_text).trim();
+    if (!sql) return { success: false, message: 'SQL 不能为空' };
+    if (!/^\s*SELECT\b/i.test(sql)) return { success: false, message: '只允许 SELECT 查询语句' };
+    try {
+      await db.pool.query(`EXPLAIN ${sql}`);
+    } catch (e) {
+      return { success: false, message: `SQL 校验失败：${e.message}` };
+    }
+    sets.push('sql_text = ?');
+    params.push(sql);
+  }
+  if (update_by !== undefined) { sets.push('update_by = ?'); params.push(update_by); }
+  sets.push('update_time = NOW()');
+  if (!sets.length) return { success: false, message: '没有需要更新的字段' };
+
+  params.push(id);
+  await db.pool.query(`UPDATE custom_report SET ${sets.join(', ')} WHERE id = ?`, params);
+  return { success: true, data: { id } };
+}
+
 module.exports = {
   login,
   getSession,
@@ -2039,8 +2753,17 @@ module.exports = {
   deleteAssembleRecords,
   queryAssembleHistory,
   getAssembleHistoryVersion,
+  queryBomVersions,
   queryInspectionHistory,
   getInspectionHistoryVersion,
   writeApiLog,
-  queryApiLogs
+  queryApiLogs,
+  queryYieldAnalysis,
+  getAssembleAnalysis,
+  searchMainSn,
+  queryCustomReports,
+  createCustomReport,
+  getCustomReportData,
+  deleteCustomReports,
+  updateCustomReport
 };

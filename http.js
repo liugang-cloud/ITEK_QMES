@@ -59,7 +59,9 @@ const OPERATOR_FIELDS = {
   importInspectItems: ['create_by'],
   importInspectRules: ['create_by'],
   importMaterials: ['create_by'],
-  importBom: ['create_by']
+  importBom: ['create_by'],
+  createCustomReport: ['create_by'],
+  updateCustomReport: ['update_by']
 };
 
 // WebSocket 服务：业务接口
@@ -186,6 +188,19 @@ wss.on('connection', (ws) => {
         case 'getAssembleHistoryVersion':
           result = await api.getAssembleHistoryVersion(data || {});
           break;
+        case 'queryBomVersions':
+          result = await api.queryBomVersions(String(data || '').trim());
+          break;
+        case 'checkMainMaterial':
+          result = await api.checkMainMaterial(data || '');
+          break;
+        case 'checkComponentBom': {
+          const parentId = String(data?.[0] || data?.parent_material_id || '').trim();
+          const compId = String(data?.[1] || data?.component_material_id || '').trim();
+          const bv = (Array.isArray(data) ? data[2] : data?.bom_version) ?? null;
+          result = await api.checkComponentBom(parentId, compId, bv);
+          break;
+        }
         case 'queryMaterials':
           result = await api.queryMaterials(data || {});
           break;
@@ -252,6 +267,30 @@ wss.on('connection', (ws) => {
         case 'queryApiLogs':
           result = await api.queryApiLogs(data || {});
           break;
+        case 'queryYieldAnalysis':
+          result = await api.queryYieldAnalysis(data || {});
+          break;
+        case 'getAssembleAnalysis':
+          result = await api.getAssembleAnalysis(data || {});
+          break;
+        case 'searchMainSn':
+          result = await api.searchMainSn(data || {});
+          break;
+        case 'queryCustomReports':
+          result = await api.queryCustomReports(data || {});
+          break;
+        case 'createCustomReport':
+          result = await api.createCustomReport(data || {});
+          break;
+        case 'getCustomReportData':
+          result = await api.getCustomReportData(data || {});
+          break;
+        case 'deleteCustomReports':
+          result = await api.deleteCustomReports(data || {});
+          break;
+        case 'updateCustomReport':
+          result = await api.updateCustomReport(data || {});
+          break;
         // 校验主件SN：查重 → 条码解析 → 主件BOM查询
         case 'scanMainSn': {
           const sn = String(data || '').trim();
@@ -290,8 +329,8 @@ wss.on('connection', (ws) => {
           // 3. 检验记录校验（无检验记录的元件不允许装配）
           const chkInsp = await api.checkComponentInspection(sn);
           if (!chkInsp.success) { result = chkInsp; break; }
-          // 4. 元件BOM验证
-          const bomRes = await api.checkComponentBom(parentMaterialId, matRes.data.material_id);
+          // 4. 元件BOM验证（优先用 data.bom_version，空值走当前生效版本）
+          const bomRes = await api.checkComponentBom(parentMaterialId, matRes.data.material_id, data.bom_version || null);
           if (!bomRes.success) { result = bomRes; break; }
           // 全部通过，返回元件物料信息
           result = {

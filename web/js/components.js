@@ -173,6 +173,7 @@ Vue.component('page-scan', {
       barcode: '',
       material: null,
       items: [],
+      process_result: '接收',
       message: '',
       msgType: ''
     };
@@ -221,6 +222,7 @@ Vue.component('page-scan', {
         batch_no: this.barcode,
         rule_code: this.material.inspect_category || null,
         result: 1,
+        process_result: this.process_result || '接收',
         items: this.items.map(it => ({
           item_id: it.item_id,
           item_name: it.item_name,
@@ -306,6 +308,12 @@ Vue.component('page-scan', {
           <div class="form-row"><label>料号：</label>{{ material ? material.material_id : '-' }}</div>
           <div class="form-row"><label>物料名称：</label>{{ material ? material.material_name : '-' }}</div>
           <div class="form-row"><label>规格：</label>{{ material ? material.material_spec : '-' }}</div>
+          <div class="form-row" v-if="material"><label>处理结果：</label>
+            <select v-model="process_result">
+              <option value="接收">接收</option>
+              <option value="拒绝">拒绝</option>
+            </select>
+          </div>
         </div>
 
         <!-- 检验项目：始终展示 -->
@@ -440,19 +448,25 @@ Vue.component('page-records', {
           <thead>
             <tr>
               <th style="width:36px;"><input type="checkbox" v-model="allChecked" @click.stop></th>
-              <th>料号</th><th>物料名称</th><th>SN号</th><th>检验大类</th><th>检验日期</th><th>检验员</th><th>结果</th><th>是否完成</th>
+              <th>料号</th><th>物料名称</th><th>SN号</th><th>检验日期</th><th>检验员</th><th>检验结果</th><th>处理结果</th><th>是否完成</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in list" :key="r.id" class="clickable" @click="nav('page-record-detail', { sn: r.batch_no })">
+            <tr v-for="r in list" :key="r.id">
               <td @click.stop><input type="checkbox" v-model="selectedIds" :value="r.id"></td>
               <td>{{ r.material_id }}</td>
               <td>{{ r.material_name }}</td>
-              <td>{{ r.batch_no }}</td>
-              <td>{{ r.rule_code || '-' }}</td>
+              <td><a href="javascript:;" @click="nav('page-record-detail', { sn: r.batch_no })" style="color:#1e88e5;text-decoration:none;">{{ r.batch_no }}</a></td>
               <td>{{ r.inspect_date ? r.inspect_date.slice(0,10) : '-' }}</td>
               <td>{{ r.inspector || '-' }}</td>
-              <td>{{ r.result == 1 ? '合格' : '不合格' }}</td>
+              <td :style="{fontWeight:600}">{{ r.result == 1 ? '合格' : '不合格' }}（{{ r.pass_count || 0 }}/{{ r.required_qty || 0 }}）</td>
+              <td>
+                <span :style="{fontWeight:600,padding:'2px 8px',borderRadius:'4px',fontSize:'12px',
+                  background: r.process_result === '拒绝' ? '#fff5f5' : '#f0fdf4',
+                  color: r.process_result === '拒绝' ? '#dc2626' : '#059669'}">
+                  {{ r.process_result || '接收' }}
+                </span>
+              </td>
               <td :style="{color: r.is_complete == 1 ? '#059669' : '#d97706', fontWeight: 600}">{{ r.is_complete == 1 ? '已完成' : '未完成' }}（{{ r.scanned_qty || 0 }}/{{ r.required_qty || 0 }}）</td>
             </tr>
             <tr v-if="!list.length"><td colspan="9" style="text-align:center;color:#909399;">暂无数据</td></tr>
@@ -460,7 +474,7 @@ Vue.component('page-records', {
         </table>
         <vue-pager :page="page" :page-size="pageSize" :total="total"
                    @change="onPageChange" @size-change="onPageSizeChange"></vue-pager>
-        <div style="margin-top:8px;color:#909399;">点击行查看明细</div>
+        <div style="margin-top:8px;color:#909399;">点击SN号查看明细</div>
       </div>
     </div>
   `
@@ -546,6 +560,7 @@ Vue.component('page-record-detail', {
       this.saving = true;
       const res = await this.ws.send('updateInspectionDetail', {
         batch_no: this.record.batch_no,
+        process_result: this.record.process_result,
         items: this.details.map(d => ({
           id: d.id,
           measured_val: d.measured_val === '' || d.measured_val === null || d.measured_val === undefined ? null : d.measured_val,
@@ -586,6 +601,10 @@ Vue.component('page-record-detail', {
       else alert(res.message);
     }
   },
+  watch: {
+    // 其他页面（如条码档案）复用本页签打开不同 SN 时，重新加载数据
+    'params.sn'(v) { if (v) this.load(); }
+  },
   mounted() { this.load(); },
   template: `
     <div>
@@ -606,6 +625,17 @@ Vue.component('page-record-detail', {
           <div class="form-row"><label>检验员：</label>{{ record.inspector || '-' }}</div>
           <div class="form-row"><label>创建人：</label>{{ record.create_by || '-' }}</div>
           <div class="form-row"><label>结果：</label>{{ record.result == 1 ? '合格' : '不合格' }}</div>
+          <div class="form-row"><label>处理结果：</label>
+            <span v-if="!editing" :style="{fontWeight:600,padding:'2px 8px',borderRadius:'4px',fontSize:'12px',
+              background: record.process_result === '拒绝' ? '#fff5f5' : '#f0fdf4',
+              color: record.process_result === '拒绝' ? '#dc2626' : '#059669'}">
+              {{ record.process_result || '接收' }}
+            </span>
+            <select v-else v-model="record.process_result">
+              <option value="接收">接收</option>
+              <option value="拒绝">拒绝</option>
+            </select>
+          </div>
           <div class="form-row"><label>是否完成：</label><span :style="{color: record.is_complete == 1 ? '#059669' : '#d97706', fontWeight: 600}">{{ record.is_complete == 1 ? '已完成' : '未完成' }}（{{ record.scanned_qty || 0 }}/{{ record.required_qty || 0 }}）</span></div>
           <div class="form-row"><label>备注：</label>{{ record.remark || '-' }}</div>
           <div class="form-row"><label>创建时间：</label>{{ record.created_time ? String(record.created_time).slice(0,19).replace('T',' ') : '-' }}</div>
@@ -1049,6 +1079,8 @@ Vue.component('page-material', {
       page: 1, pageSize: 20, total: 0, list: [],
       editing: false, saving: false, message: '', msgType: '',
       ruleOptions: [], openRow: -1,
+      // 检验大类多选筛选
+      selectedCats: [], catOpen: false,
       importMsg: '', importMsgType: '', importErrors: []
     };
   },
@@ -1058,13 +1090,30 @@ Vue.component('page-material', {
       if (res.success) this.ruleOptions = res.data;
     },
     async search() {
-      const res = await this.ws.send('queryMaterials', { ...this.query, page: this.page, page_size: this.pageSize });
+      const res = await this.ws.send('queryMaterials', {
+        ...this.query,
+        inspect_categories: this.selectedCats.slice(),
+        page: this.page, page_size: this.pageSize
+      });
       if (res.success) {
         this.list = res.data.list;
         this.total = res.data.total;
         // 每行加一个编辑态用的数组（从逗号串解析）
         this.list.forEach(r => { r.inspectArr = (r.inspect_category || '').split(',').filter(Boolean); });
       }
+    },
+    toggleCat(code) {
+      const idx = this.selectedCats.indexOf(code);
+      if (idx === -1) this.selectedCats.push(code);
+      else this.selectedCats.splice(idx, 1);
+    },
+    removeCat(code) {
+      const idx = this.selectedCats.indexOf(code);
+      if (idx !== -1) this.selectedCats.splice(idx, 1);
+    },
+    catLabel(code) {
+      const o = this.ruleOptions.find(x => x.rule_code === code);
+      return o ? `${code}(${o.rule_name})` : code;
     },
     doSearch() { this.page = 1; this.editing = false; this.search(); },
     onPageChange(p) { this.page = p; this.editing = false; this.search(); },
@@ -1113,8 +1162,10 @@ Vue.component('page-material', {
   },
   mounted() {
     this.search();
+    this.loadRuleOptions();
     this.docClick = (e) => {
       if (this.openRow >= 0 && !e.target.closest('.rule-picker-wrap')) this.openRow = -1;
+      if (this.catOpen && !e.target.closest('.cat-picker-wrap')) this.catOpen = false;
     };
     document.addEventListener('click', this.docClick);
   },
@@ -1127,6 +1178,28 @@ Vue.component('page-material', {
           <label>料号：</label><input v-model="query.material_id" @keyup.enter="doSearch" placeholder="模糊">
           <label style="margin-left:12px;">物料名称：</label><input v-model="query.material_name" @keyup.enter="doSearch" placeholder="模糊">
           <label style="margin-left:12px;">规格：</label><input v-model="query.material_spec" @keyup.enter="doSearch" placeholder="模糊">
+          <label style="margin-left:12px;">检验规则：</label>
+          <div class="cat-picker-wrap" style="position:relative;display:inline-block;min-width:240px;vertical-align:middle;">
+            <div @click.stop="catOpen = !catOpen"
+                 style="border:1px solid #dcdfe6;border-radius:4px;min-height:32px;padding:2px 6px;background:#fff;cursor:pointer;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+              <span v-if="!selectedCats.length" style="color:#c0c4cc;">全部（可多选）</span>
+              <span v-for="c in selectedCats" :key="c"
+                    style="background:#ecf5ff;color:#409eff;border:1px solid #d9ecff;border-radius:3px;padding:0 4px;font-size:12px;line-height:20px;">
+                {{ catLabel(c) }}<i style="cursor:pointer;margin-left:4px;" @click.stop="removeCat(c)">×</i>
+              </span>
+            </div>
+            <div v-if="catOpen"
+                 style="position:absolute;z-index:20;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e4e7ed;border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.12);max-height:260px;overflow:auto;min-width:100%;">
+              <div v-for="o in ruleOptions" :key="o.rule_code"
+                   @click.stop="toggleCat(o.rule_code)"
+                   style="padding:6px 10px;cursor:pointer;white-space:nowrap;"
+                   :style="{ background: selectedCats.includes(o.rule_code) ? '#ecf5ff' : '#fff' }">
+                <span style="display:inline-block;width:14px;color:#409eff;">{{ selectedCats.includes(o.rule_code) ? '✓' : '' }}</span>
+                {{ o.rule_code }} - {{ o.rule_name }}
+              </div>
+              <div v-if="!ruleOptions.length" style="padding:8px 10px;color:#909399;">暂无检验规则</div>
+            </div>
+          </div>
         </div>
         <button @click="doSearch">查询</button>
         <button @click="nav('page-material-add')">新增</button>
@@ -1146,7 +1219,7 @@ Vue.component('page-material', {
       <div class="panel" style="margin-top:16px;">
         <table>
           <thead><tr>
-            <th>料号</th><th>物料名称</th><th>规格</th><th>检验大类</th><th>状态</th><th>创建人</th><th>创建时间</th>
+            <th>料号</th><th>物料名称</th><th>规格</th><th>检验规则</th><th>状态</th><th>创建人</th><th>创建时间</th>
           </tr></thead>
           <tbody>
             <tr v-for="(r, i) in list" :key="r.material_id">
@@ -1709,7 +1782,7 @@ Vue.component('page-bom', {
   props: ['ws', 'nav'],
   data() {
     return {
-      query: { parent_material_id: '', parent_material_name: '' },
+      query: { parent_material_id: '', parent_material_name: '', component_material: '', component_name: '' },
       page: 1, pageSize: 20, total: 0, list: [],
       importMsg: '', importMsgType: '', importErrors: []
     };
@@ -1743,6 +1816,10 @@ Vue.component('page-bom', {
           <label>主件料号：</label><input v-model="query.parent_material_id" @keyup.enter="doSearch" placeholder="模糊">
           <label style="margin-left:12px;">主件名称：</label><input v-model="query.parent_material_name" @keyup.enter="doSearch" placeholder="模糊">
         </div>
+        <div class="form-row" style="margin-top:8px;">
+          <label>元件料号：</label><input v-model="query.component_material" @keyup.enter="doSearch" placeholder="查找包含该元件的主件">
+          <label style="margin-left:12px;">元件名称：</label><input v-model="query.component_name" @keyup.enter="doSearch" placeholder="查找包含该元件的主件">
+        </div>
         <button @click="doSearch">查询</button>
         <button @click="nav('page-bom-add')">新增BOM</button>
         <button @click="triggerImport">导入</button>
@@ -1758,8 +1835,8 @@ Vue.component('page-bom', {
             <th>主件料号</th><th>主件名称</th><th>规格</th><th>当前版本</th><th>创建人</th><th>创建日期</th>
           </tr></thead>
           <tbody>
-            <tr v-for="r in list" :key="r.parent_material_id" class="clickable" @click="openDetail(r)">
-              <td>{{ r.parent_material_id }}</td>
+            <tr v-for="r in list" :key="r.parent_material_id">
+              <td><a href="javascript:;" @click="openDetail(r)" style="color:#1e88e5;text-decoration:none;">{{ r.parent_material_id }}</a></td>
               <td>{{ r.parent_material_name || '-' }}</td>
               <td>{{ r.parent_material_spec || '-' }}</td>
               <td><span v-if="r.current_version > 0" style="color:#409eff;font-weight:600;">v{{ r.current_version }}</span><span v-else style="color:#c0c4cc;">-</span></td>
@@ -2302,7 +2379,7 @@ Vue.component('page-assemble-records', {
   props: ['ws', 'nav'],
   data() {
     return {
-      filters: { main_sn: '', main_material_id: '', operator: '', is_complete: '', date_start: '', date_end: '' },
+      filters: { main_sn: '', main_material_id: '', operator: '', is_complete: '', date_start: '', date_end: '', component_sn: '', component_material: '' },
       page: 1,
       pageSize: 10,
       total: 0,
@@ -2351,6 +2428,8 @@ Vue.component('page-assemble-records', {
       <div class="panel">
         <div class="form-row"><label>主件SN：</label><input v-model="filters.main_sn" placeholder="模糊查询" @keyup.enter="doSearch"></div>
         <div class="form-row"><label>主件料号：</label><input v-model="filters.main_material_id" placeholder="模糊查询" @keyup.enter="doSearch"></div>
+        <div class="form-row"><label>元件SN：</label><input v-model="filters.component_sn" placeholder="查找包含该元件的装配单" @keyup.enter="doSearch"></div>
+        <div class="form-row"><label>元件料号：</label><input v-model="filters.component_material" placeholder="查找包含该元件的装配单" @keyup.enter="doSearch"></div>
         <div class="form-row"><label>操作员：</label><input v-model="filters.operator" placeholder="模糊查询" @keyup.enter="doSearch"></div>
         <div class="form-row">
           <label>是否完成：</label>
@@ -2374,27 +2453,27 @@ Vue.component('page-assemble-records', {
           <thead>
             <tr>
               <th style="width:36px;"><input type="checkbox" v-model="allChecked" @click.stop></th>
-              <th>主件SN</th><th>主件料号</th><th>物料名称</th><th>BOM版本</th><th>是否完成</th><th>装配日期</th><th>操作员</th><th>备注</th>
+              <th>主件SN</th><th>主件料号</th><th>物料名称</th><th>主件规格</th><th>BOM版本</th><th>是否完成</th><th>装配日期</th><th>操作员</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in list" :key="r.id" class="clickable" @click="nav('page-assemble-detail', { sn: r.main_sn })">
+            <tr v-for="r in list" :key="r.id">
               <td @click.stop><input type="checkbox" v-model="selectedIds" :value="r.id"></td>
-              <td>{{ r.main_sn }}</td>
+              <td><a href="javascript:;" @click="nav('page-assemble-detail', { sn: r.main_sn })" style="color:#1e88e5;text-decoration:none;">{{ r.main_sn }}</a></td>
               <td>{{ r.main_material_id }}</td>
               <td>{{ r.main_material_name || '-' }}</td>
+              <td>{{ r.main_material_spec || '-' }}</td>
               <td><span v-if="r.bom_version > 0" style="color:#409eff;font-weight:600;">v{{ r.bom_version }}</span><span v-else style="color:#c0c4cc;">-</span></td>
               <td :style="{color: r.is_complete == 1 ? '#059669' : '#d97706', fontWeight: 600}">{{ r.is_complete == 1 ? '已完成' : '未完成' }}（{{ r.scanned_qty || 0 }}/{{ r.required_qty || 0 }}）</td>
               <td>{{ r.assemble_date ? String(r.assemble_date).slice(0,10) : '-' }}</td>
               <td>{{ r.operator || '-' }}</td>
-              <td>{{ r.remark || '-' }}</td>
             </tr>
             <tr v-if="!list.length"><td colspan="9" style="text-align:center;color:#909399;">暂无数据</td></tr>
           </tbody>
         </table>
         <vue-pager :page="page" :page-size="pageSize" :total="total"
                    @change="onPageChange" @size-change="onPageSizeChange"></vue-pager>
-        <div style="margin-top:8px;color:#909399;">点击行查看明细</div>
+        <div style="margin-top:8px;color:#909399;">点击主件SN查看明细</div>
       </div>
     </div>
   `
@@ -2407,7 +2486,8 @@ Vue.component('page-assemble-detail', {
     return {
       record: null,
       bom: [],
-      slots: [],          // 槽位：{ id, component_material_id, material_name, component_sn('' = 未扫), created_time }
+      bomVersions: [],     // 该主件可用的 BOM 版本号列表
+      slots: [],           // 槽位：{ id, component_material_id, material_name, component_sn('' = 未扫), created_time }
       componentSn: '',
       message: '',
       msgType: '',
@@ -2443,6 +2523,7 @@ Vue.component('page-assemble-detail', {
             id: null,
             component_material_id: b.component_material,
             material_name: b.component_material_name || '',
+            material_spec: b.component_material_spec || '',
             component_sn: '',
             created_time: null
           });
@@ -2461,6 +2542,7 @@ Vue.component('page-assemble-detail', {
             id: d.id,
             component_material_id: d.component_material_id,
             material_name: (this.bomMap[d.component_material_id] || {}).component_material_name || '',
+            material_spec: (this.bomMap[d.component_material_id] || {}).component_material_spec || '',
             component_sn: d.component_sn,
             created_time: d.created_time
           });
@@ -2473,11 +2555,79 @@ Vue.component('page-assemble-detail', {
       if (res.success) {
         this.record = res.data.record;
         this.bom = res.data.bom || [];
+        this.bomVersions = res.data.bom_versions || [];
         this.buildSlots(res.data.details);
       } else {
         this.msgTarget = 'top';
         this.message = res.message;
         this.msgType = 'err';
+      }
+    },
+    // 切换 BOM 版本：拉新 BOM → 重排槽位 → 已扫 SN 自动匹配到新槽位
+    async onChangeBomVersion(v) {
+      console.log('[DEBUG onChangeBomVersion] v=', v, 'typeof=', typeof v, 'record.bom_version=', this.record.bom_version, 'bomVersions=', this.bomVersions, 'editing=', this.editing);
+      if (!this.editing) return;
+      const version = Number(v);
+      console.log('[DEBUG onChangeBomVersion] version=', version, 'typeof=', typeof version);
+      const res = await this.ws.send('checkMainMaterial', { mid: this.record.main_material_id, bom_version: version });
+      if (!res.success) {
+        this.msgTarget = 'top';
+        this.msgType = 'err';
+        this.message = res.message;
+        return;
+      }
+      // 暂存已扫 SN（槽位会重建，但 SN 要保留）
+      const filledSnList = this.slots.filter(s => s.component_sn).map(s => ({
+        component_sn: s.component_sn,
+        component_material_id: s.component_material_id,
+        created_time: s.created_time
+      }));
+      // 更新 bom → 重建槽位 → 自动填回 SN
+      this.bom = res.data.components || [];
+      this.record.bom_version = version;
+      this.buildSlotsWithFill(filledSnList);
+    },
+    // 在新 BOM 上展开槽位 + 回填已扫 SN（旧 SN 如对应元件在新 BOM 里则填入，否则单独追加显示）
+    buildSlotsWithFill(filledSnList) {
+      const slots = [];
+      const newBomMap = {};
+      this.bom.forEach(b => { newBomMap[b.component_material] = true; });
+      this.bom.forEach(b => {
+        for (let i = 0; i < Number(b.quantity); i++) {
+          slots.push({
+            id: null,
+            component_material_id: b.component_material,
+            material_name: b.component_material_name || '',
+            material_spec: b.component_material_spec || '',
+            component_sn: '',
+            created_time: null
+          });
+        }
+      });
+      // 只把能填进新 BOM 空槽的 SN 保留；其余归入 dropped
+      const dropped = [];
+      (filledSnList || []).forEach(d => {
+        const slot = slots.find(s => s.component_material_id === d.component_material_id && !s.component_sn);
+        if (slot) {
+          slot.component_sn = d.component_sn;
+          slot.created_time = d.created_time;
+        } else if (newBomMap[d.component_material_id]) {
+          // 料号在新 BOM 里但槽满了（BOM 缩量）
+          dropped.push({ ...d, reason: '新BOM用量减少，无剩余槽位' });
+        } else {
+          // 旧 SN 的料号在新 BOM 里完全没了（BOM 删掉了这个元件）
+          dropped.push({ ...d, reason: '新BOM中已无此元件' });
+        }
+      });
+      this.slots = slots;
+      // 提示被抛弃的 SN —— 它们直接从 slots 中移除，保存时不会提交
+      if (dropped.length > 0) {
+        const ids = dropped.map(u => u.component_sn + '（' + u.reason + '）').join('\n  · ');
+        this.message = '已切换 BOM 版本，以下已扫 SN 因新 BOM 不再需要而被自动抛弃：\n  · ' + ids;
+        this.msgType = 'warn';
+      } else {
+        this.message = `已切换到 BOM v${this.record.bom_version}，槽位已重排`;
+        this.msgType = 'ok';
       }
     },
     startEdit() {
@@ -2541,9 +2691,12 @@ Vue.component('page-assemble-detail', {
       this.message = `已扫描 ${this.filledCount}/${this.slots.length}：${res.data.material_name}`;
     },
     async save() {
+      console.log('[DEBUG save] record.bom_version=', this.record.bom_version, 'typeof=', typeof this.record.bom_version, 'slots.length=', this.slots.length);
       this.saving = true;
       const res = await this.ws.send('updateAssembleDetail', {
         main_sn: this.record.main_sn,
+        bom_version: this.record.bom_version,
+        // 传完整槽位清单（含空）；buildSlotsWithFill 已把流浪 SN 从 slots 中移除
         components: this.slots.map(s => ({
           component_sn: s.component_sn || '',
           component_material_id: s.component_material_id
@@ -2589,6 +2742,10 @@ Vue.component('page-assemble-detail', {
       }
     }
   },
+  watch: {
+    // 其他页面（如条码档案）复用本页签打开不同主件 SN 时，重新加载数据
+    'params.sn'(v) { if (v) this.load(); }
+  },
   mounted() { this.load(); },
   template: `
     <div>
@@ -2602,7 +2759,17 @@ Vue.component('page-assemble-detail', {
           <div class="form-row"><label>单据ID：</label>{{ record.id }}</div>
           <div class="form-row"><label>主件SN：</label>{{ record.main_sn }}</div>
           <div class="form-row"><label>主件料号：</label>{{ record.main_material_id }}</div>
-          <div class="form-row"><label>BOM版本：</label><span v-if="record.bom_version > 0" style="color:#409eff;font-weight:600;">v{{ record.bom_version }}</span><span v-else style="color:#c0c4cc;">-</span></div>
+          <div class="form-row"><label>BOM版本：</label>
+            <template v-if="!editing">
+              <span v-if="record.bom_version > 0" style="color:#409eff;font-weight:600;">v{{ record.bom_version }}</span>
+              <span v-else style="color:#c0c4cc;">-</span>
+            </template>
+            <template v-else>
+              <select v-model.number="record.bom_version" @change="onChangeBomVersion(record.bom_version)">
+                <option v-for="v in bomVersions" :key="v" :value="v">v{{ v }}</option>
+              </select>
+            </template>
+          </div>
           <div class="form-row"><label>物料名称：</label>{{ record.material_name || '-' }}</div>
           <div class="form-row"><label>规格：</label>{{ record.material_spec || '-' }}</div>
           <div class="form-row"><label>是否完成：</label><span :style="{color: record.is_complete == 1 ? '#059669' : '#d97706', fontWeight: 600}">{{ record.is_complete == 1 ? '已完成' : '未完成' }}（{{ record.scanned_qty || 0 }}/{{ record.required_qty || 0 }}）</span></div>
@@ -2644,17 +2811,20 @@ Vue.component('page-assemble-detail', {
           <table>
             <thead>
               <tr>
-                <th>序号</th><th>元件料号</th><th>元件名称</th><th>元件SN</th><th>状态</th>
+                <th>序号</th><th>元件料号</th><th>元件名称</th><th>元件规格</th><th>元件SN</th><th>状态</th>
                 <th v-if="editing">操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(s, i) in slots" :key="i"
-                  :class="{clickable: !editing && !!s.component_sn}" @click="openRecord(s)">
+              <tr v-for="(s, i) in slots" :key="i">
                 <td>{{ i + 1 }}</td>
                 <td>{{ s.component_material_id }}</td>
                 <td>{{ s.material_name || '-' }}</td>
-                <td :style="{color: s.component_sn ? '#059669' : '#c0c4cc'}">{{ s.component_sn || '（未扫）' }}</td>
+                <td>{{ s.material_spec || '-' }}</td>
+                <td :style="{color: s.component_sn ? '#059669' : '#c0c4cc', whiteSpace: 'nowrap'}">
+                  <a v-if="s.component_sn && !editing" href="javascript:;" @click="openRecord(s)" style="color:#059669;text-decoration:none;">{{ s.component_sn }}</a>
+                  <span v-else>{{ s.component_sn || '（未扫）' }}</span>
+                </td>
                 <td>
                   <span v-if="s.component_sn" style="color:#059669;font-weight:600;">已扫</span>
                   <span v-else style="color:#d97706;">未扫</span>
@@ -2663,10 +2833,10 @@ Vue.component('page-assemble-detail', {
                   <button v-if="s.component_sn" style="background:#dd4b4b;padding:2px 10px;" @click.stop="clearSlot(i)">清除</button>
                 </td>
               </tr>
-              <tr v-if="!slots.length"><td :colspan="editing ? 6 : 5" style="text-align:center;color:#909399;">该主件无BOM元件</td></tr>
+              <tr v-if="!slots.length"><td :colspan="editing ? 7 : 6" style="text-align:center;color:#909399;">该主件无BOM元件</td></tr>
             </tbody>
           </table>
-          <div v-if="!editing" style="margin-top:12px;color:#909399;">点击已扫元件行查看该元件的检验明细</div>
+          <div v-if="!editing" style="margin-top:12px;color:#909399;">点击元件SN查看该元件的检验明细</div>
           <div v-if="editing" style="margin-top:12px;color:#909399;">清除后可重新扫描元件SN填入未扫槽位，保存时生效。</div>
         </div>
 
@@ -3025,14 +3195,15 @@ Vue.component('page-barcode-print', {
 
 // ========== 条码档案 ==========
 Vue.component('page-barcode-archive', {
-  props: ['ws'],
+  props: ['ws', 'nav'],
   data() {
     return {
       filters: { material_id: '', material_name: '', sn: '', sn_date_start: '', sn_date_end: '' },
       list: [],
       total: 0,
       page: 1,
-      pageSize: 20
+      pageSize: 20,
+      rule: null   // 条码格式配置（全局唯一）
     };
   },
   methods: {
@@ -3052,9 +3223,58 @@ Vue.component('page-barcode-archive', {
       this.search();
     },
     onPageChange(p) { this.page = p; this.load(); },
-    onPageSizeChange(s) { this.pageSize = s; this.page = 1; this.load(); }
+    onPageSizeChange(s) { this.pageSize = s; this.page = 1; this.load(); },
+    openInspection(sn) { this.nav('page-record-detail', { sn }); },
+    openAssemble(mainSn) { this.nav('page-assemble-detail', { sn: mainSn }); },
+    async loadRule() {
+      const res = await this.ws.send('getBarcodeRule', {});
+      if (res.success) this.rule = res.data;
+    },
+    // 打印当前行的条码（使用档案中已有的 SN，不新增流水）
+    printRow(r) {
+      if (!this.rule) { alert('条码格式未加载，请稍后重试'); return; }
+      const parts = String(r.sn || '').split('#');
+      if (parts.length < 3) { alert('条码格式不正确，无法打印'); return; }
+      const mid = parts[0];
+      const datePart = parts[1];
+      const serialPart = parts[2];
+      const rule = this.rule;
+      const q = qrcode(0, 'M');
+      q.addData(r.sn);
+      q.make();
+      const qrUrl = q.createDataURL(4, 0);
+      const label = `
+        <div style="width:${rule.label_width}mm;height:${rule.label_height}mm;border:1px solid #ccc;position:relative;background:#fff;">
+          <img src="${qrUrl}" style="position:absolute;left:${rule.qr_x}mm;top:${rule.qr_y}mm;width:${rule.qr_size}mm;height:${rule.qr_size}mm;">
+          <div style="position:absolute;left:${rule.mid_x}mm;top:${rule.mid_y}mm;font-size:${rule.mid_font}pt;">${mid}</div>
+          <div style="position:absolute;left:${rule.date_x}mm;top:${rule.date_y}mm;font-size:${rule.date_font}pt;">${datePart}</div>
+          <div style="position:absolute;left:${rule.serial_x}mm;top:${rule.serial_y}mm;font-size:${rule.serial_font}pt;">${serialPart}</div>
+        </div>`;
+      const w = window.open('', '_blank');
+      w.document.write(`
+        <html>
+          <head><title>条码打印（${r.sn}）</title>
+            <style>
+              body { margin: 0; padding: 20px; }
+              @media print {
+                body { padding: 0; }
+                @page { size: auto; margin: 5mm; }
+              }
+            </style>
+          </head>
+          <body>${label}
+            <script>
+              window.onload = function () {
+                setTimeout(function () { window.focus(); window.print(); }, 100);
+              };
+            <\/script>
+          </body>
+        </html>
+      `);
+      w.document.close();
+    }
   },
-  mounted() { this.load(); },
+  mounted() { this.load(); this.loadRule(); },
   template: `
     <div>
       <div class="page-title">条码档案</div>
@@ -3075,7 +3295,7 @@ Vue.component('page-barcode-archive', {
         </div>
         <table style="margin-top:10px;">
           <thead>
-            <tr><th>ID</th><th>条码 SN</th><th>料号</th><th>物料名称</th><th>日期</th><th>流水号</th><th>写入时间</th></tr>
+            <tr><th>ID</th><th>条码 SN</th><th>料号</th><th>物料名称</th><th>类型</th><th>检验否</th><th>装配否</th><th>日期</th><th>流水号</th><th>写入时间</th><th>操作</th></tr>
           </thead>
           <tbody>
             <tr v-for="r in list" :key="r.id">
@@ -3083,11 +3303,21 @@ Vue.component('page-barcode-archive', {
               <td>{{ r.sn }}</td>
               <td>{{ r.material_id }}</td>
               <td>{{ r.material_name || '-' }}</td>
+              <td>{{ r.part_type || '-' }}</td>
+              <td>
+                <a v-if="r.has_inspection == 1" class="link" style="color:#409eff;cursor:pointer;" @click="openInspection(r.sn)">是</a>
+                <span v-else>否</span>
+              </td>
+              <td>
+                <a v-if="r.has_assembly == 1" class="link" style="color:#409eff;cursor:pointer;" @click="openAssemble(r.assembly_main_sn || r.sn)">是</a>
+                <span v-else>否</span>
+              </td>
               <td>{{ r.sn_date }}</td>
               <td>{{ String(r.serial_no).padStart(4, '0') }}</td>
               <td>{{ r.created_time }}</td>
+              <td><button class="mini" @click="printRow(r)">打印</button></td>
             </tr>
-            <tr v-if="!list.length"><td colspan="7" style="text-align:center;color:#909399;">暂无数据</td></tr>
+            <tr v-if="!list.length"><td colspan="11" style="text-align:center;color:#909399;">暂无数据</td></tr>
           </tbody>
         </table>
         <vue-pager :page="page" :page-size="pageSize" :total="total"
@@ -3228,11 +3458,11 @@ Vue.component('page-arch', {
       try {
         // 1. 数据模型（只加载一次）
         if (!window.QMES_DIAGRAM_DATA) {
-          await this.loadScript('js/diagram.js');
+          await this.loadScript('js/diagram.js?v=20261024n');
         }
         // 2. 渲染逻辑（只加载一次，定义 window.renderArchFlat）
         if (typeof window.renderArchFlat !== 'function') {
-          await this.loadScript('js/flat.js');
+          await this.loadScript('js/flat.js?v=20261024n');
         }
         // 3. 渲染到当前组件容器
         if (typeof window.renderArchFlat === 'function') {
@@ -3264,6 +3494,747 @@ Vue.component('page-arch', {
             <div class="dbody" id="d-content"></div>
           </div>
         </div>
+      </div>
+    </div>
+  `
+});
+
+Vue.component('page-yield-analysis', {
+  props: ['ws'],
+  data() {
+    return {
+      materials: [],
+      material_id: '',
+      materialKeyword: '',
+      materialFocused: false,
+      date_start: this.defaultStart(),
+      date_end: this.defaultEnd(),
+      loading: false,
+      header: null,
+      items: []
+    };
+  },
+  computed: {
+    filteredMaterials() {
+      const kw = (this.materialKeyword || '').trim().toLowerCase();
+      if (!kw) return this.materials.slice(0, 80);
+      return this.materials.filter(m =>
+        (m.material_id || '').toLowerCase().indexOf(kw) >= 0 ||
+        (m.material_name || '').toLowerCase().indexOf(kw) >= 0 ||
+        (m.material_spec || '').toLowerCase().indexOf(kw) >= 0
+      ).slice(0, 80);
+    },
+    selectedMaterial() {
+      if (!this.material_id) return null;
+      return this.materials.find(m => m.material_id === this.material_id) || null;
+    }
+  },
+  mounted() {
+    this.loadMaterials();
+    document.addEventListener('click', this.onDocClick);
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this.onDocClick);
+  },
+  methods: {
+    defaultStart() {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      return d.toISOString().slice(0, 10);
+    },
+    defaultEnd() {
+      return new Date().toISOString().slice(0, 10);
+    },
+    async loadMaterials() {
+      const res = await this.ws.send('queryMaterials', { page_size: 500, is_active: 1 });
+      if (res.success && res.data && res.data.list) {
+        this.materials = res.data.list;
+      }
+    },
+    onDocClick(e) {
+      const wrap = this.$refs.materialSelector;
+      if (wrap && !wrap.contains(e.target)) this.materialFocused = false;
+    },
+    selectMaterial(m) {
+      this.material_id = m.material_id;
+      this.materialKeyword = '';
+      this.materialFocused = false;
+    },
+    clearMaterial() {
+      this.material_id = '';
+      this.materialKeyword = '';
+      this.$nextTick(() => { this.$refs.materialInput && this.$refs.materialInput.focus(); });
+    },
+    inputFocus() {
+      this.materialFocused = true;
+      if (this.material_id && !this.materialKeyword) {
+        const m = this.selectedMaterial;
+        this.materialKeyword = m ? m.material_id + ' - ' + m.material_name : '';
+      }
+    },
+    onKeywordInput() {
+      if (this.material_id && this.materialKeyword !== (this.selectedMaterial ? this.selectedMaterial.material_id + ' - ' + this.selectedMaterial.material_name : '')) {
+        this.material_id = '';
+      }
+    },
+    async query() {
+      if (!this.material_id) { alert('请选择物料（输入料号或名称后选择一项）'); return; }
+      if (!this.date_start || !this.date_end) { alert('请选择时间范围'); return; }
+      this.loading = true;
+      const res = await this.ws.send('queryYieldAnalysis', {
+        material_id: this.material_id,
+        date_start: this.date_start,
+        date_end: this.date_end
+      });
+      this.loading = false;
+      if (!res.success) {
+        alert(res.message || '查询失败');
+        return;
+      }
+      this.header = res.data.header;
+      this.items = res.data.items;
+    },
+    reset() {
+      this.material_id = '';
+      this.materialKeyword = '';
+      this.date_start = this.defaultStart();
+      this.date_end = this.defaultEnd();
+      this.header = null;
+      this.items = [];
+    },
+    yieldColor(pct) {
+      if (pct >= 95) return '#059669';
+      if (pct >= 80) return '#d97706';
+      return '#dc2626';
+    },
+    yieldBarStyle(pct) {
+      return { width: Math.max(pct, 2) + '%', background: this.yieldColor(pct) };
+    }
+  },
+  template: `
+    <div class="yield-page">
+      <div class="page-title">良率分析</div>
+
+      <!-- 查询条件 -->
+      <div class="yield-search">
+        <label>物料：</label>
+        <div class="yield-mat-select" ref="materialSelector">
+          <div class="yield-mat-input-row">
+            <input ref="materialInput" type="text"
+                   class="yield-mat-input"
+                   v-model="materialKeyword"
+                   :placeholder="selectedMaterial ? selectedMaterial.material_id + ' - ' + selectedMaterial.material_name : '输入料号或名称搜索...'"
+                   @focus="inputFocus"
+                   @input="onKeywordInput"
+                   @keydown.enter.prevent="materialFocused = false">
+            <span v-if="material_id" class="yield-mat-clear" @click="clearMaterial">×</span>
+          </div>
+          <div v-if="materialFocused && filteredMaterials.length" class="yield-mat-dropdown">
+            <div v-for="m in filteredMaterials" :key="m.material_id"
+                 class="yield-mat-option"
+                 :class="{ sel: m.material_id === material_id }"
+                 @mousedown.prevent="selectMaterial(m)">
+              <div class="yield-mat-opt-id">{{ m.material_id }}</div>
+              <div class="yield-mat-opt-name">{{ m.material_name }}<span v-if="m.material_spec" class="yield-mat-opt-spec"> · {{ m.material_spec }}</span></div>
+            </div>
+          </div>
+          <div v-else-if="materialFocused && materialKeyword && !filteredMaterials.length" class="yield-mat-dropdown yield-mat-empty">
+            没有匹配的物料
+          </div>
+        </div>
+        <label>开始日期：</label>
+        <input type="date" v-model="date_start">
+        <label>结束日期：</label>
+        <input type="date" v-model="date_end">
+        <button @click="query" :disabled="loading">{{ loading ? '查询中...' : '查询' }}</button>
+        <button @click="reset">重置</button>
+      </div>
+
+      <template v-if="header">
+        <div class="yield-header">
+          <div class="yh-card">
+            <div class="yh-label">物料号</div>
+            <div class="yh-value">{{ header.material_id }}</div>
+          </div>
+          <div class="yh-card">
+            <div class="yh-label">物料名称</div>
+            <div class="yh-value">{{ header.material_name }}</div>
+          </div>
+          <div class="yh-card">
+            <div class="yh-label">规格</div>
+            <div class="yh-value">{{ header.material_spec || '-' }}</div>
+          </div>
+          <div class="yh-card">
+            <div class="yh-label">检验单数量</div>
+            <div class="yh-value big">{{ header.record_count }}</div>
+          </div>
+          <div class="yh-card">
+            <div class="yh-label">拒收数量</div>
+            <div class="yh-value big" style="color:#dc2626;">{{ header.reject_count }}</div>
+          </div>
+          <div class="yh-card">
+            <div class="yh-label">平均良率</div>
+            <div class="yh-value big" :style="{color: yieldColor(header.avg_yield)}">{{ header.avg_yield }}%</div>
+          </div>
+        </div>
+
+        <div class="yield-section">
+          <div class="yield-section-title">检验项目分析</div>
+          <table class="yield-table" v-if="items.length">
+            <thead>
+              <tr>
+                <th style="width:120px;">检验项目编号</th>
+                <th style="width:160px;">项目名称</th>
+                <th style="width:120px;">标准值</th>
+                <th style="width:140px;">标准区间</th>
+                <th style="width:90px;">检验数量</th>
+                <th style="width:90px;">合格数量</th>
+                <th style="width:90px;">良率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(it, idx) in items" :key="idx">
+                <td>{{ it.item_id }}</td>
+                <td>{{ it.item_name }}</td>
+                <td>{{ it.standard_value || '-' }}</td>
+                <td>{{ it.standard_range ? '[' + it.standard_range.split(',').join(', ') + ']' : '-' }}</td>
+                <td style="text-align:center;">{{ it.check_count }}</td>
+                <td style="text-align:center;">{{ it.pass_count }}</td>
+                <td style="text-align:center;font-weight:600;" :style="{color: yieldColor(it.pass_rate)}">{{ it.pass_rate }}%</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="yield-empty">该条件下暂无检验数据</div>
+        </div>
+
+        <div class="yield-section">
+          <div class="yield-section-title">良率分布图</div>
+          <div class="yield-chart" v-if="items.length">
+            <div class="yield-chart-bar" v-for="(it, idx) in items" :key="idx">
+              <div class="yield-chart-info">
+                <div class="yield-chart-name" :title="it.item_name">{{ it.item_name }}</div>
+                <div class="yield-chart-sub">{{ it.item_id }}</div>
+              </div>
+              <div class="yield-chart-bar-body">
+                <div class="yield-chart-bar-fill" :style="yieldBarStyle(it.pass_rate)"></div>
+              </div>
+              <div class="yield-chart-pct" :style="{color: yieldColor(it.pass_rate)}">{{ it.pass_rate }}%</div>
+              <div class="yield-chart-count">{{ it.pass_count }}/{{ it.check_count }}</div>
+            </div>
+          </div>
+          <div v-else class="yield-empty">该条件下暂无检验数据</div>
+        </div>
+      </template>
+
+      <div v-else-if="!loading" class="yield-intro">
+        <div style="font-size:16px;font-weight:600;margin-bottom:10px;">良率分析报表</div>
+        <div style="color:#667085;line-height:1.8;">
+          请选择物料和时间范围后点击"查询"，将展示：<br>
+          • 汇总信息：检验单数量、平均良率<br>
+          • 检验项目明细：每个检验项目的标准、检验数量、合格数量、良率<br>
+          • 良率分布图：直观展示各检验项目的良率情况
+        </div>
+      </div>
+    </div>
+  `
+});
+
+// ========== 装配分析 ==========
+Vue.component('page-assemble-analysis', {
+  props: ['ws'],
+  data() {
+    return {
+      main_sn: '',
+      loading: false,
+      header: null,
+      versions: [],
+      rows: [],
+      change_summary: null,
+      // SN 搜索下拉
+      snList: [],
+      snDropdown: false,
+      snLoading: false,
+      snTimer: null,
+      focused: false
+    };
+  },
+  mounted() {
+    // 点击组件外部时关闭下拉
+    this._clickOutsideHandler = (e) => {
+      if (!this.$el.contains(e.target)) { this.snDropdown = false; }
+    };
+    document.addEventListener('click', this._clickOutsideHandler);
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this._clickOutsideHandler);
+    if (this.snTimer) clearTimeout(this.snTimer);
+  },
+  methods: {
+    async query() {
+      if (!this.main_sn) { alert('请输入装配单主件SN'); return; }
+      this.loading = true;
+      const res = await this.ws.send('getAssembleAnalysis', { main_sn: this.main_sn.trim() });
+      this.loading = false;
+      if (!res.success) { alert(res.message || '查询失败'); return; }
+      this.header = res.data.header;
+      this.versions = res.data.versions;
+      this.rows = res.data.rows;
+      this.change_summary = res.data.change_summary;
+    },
+    clearAll() {
+      this.main_sn = '';
+      this.header = null;
+      this.versions = [];
+      this.rows = [];
+      this.change_summary = null;
+      this.snList = [];
+      this.snDropdown = false;
+    },
+    // SN 输入防抖
+    onSnInput() {
+      if (this.snTimer) clearTimeout(this.snTimer);
+      this.snTimer = setTimeout(() => this.loadSnList(), 250);
+    },
+    async loadSnList() {
+      this.snLoading = true;
+      try {
+        const res = await this.ws.send('searchMainSn', { keyword: this.main_sn.trim() });
+        if (res.success) {
+          this.snList = res.data || [];
+          this.snDropdown = true;
+        }
+      } finally {
+        this.snLoading = false;
+      }
+    },
+    async showSnDropdown() {
+      if (!this.snList.length) await this.loadSnList();
+      this.snDropdown = true;
+    },
+    selectSn(sn) {
+      this.main_sn = sn;
+      this.snDropdown = false;
+      this.query();
+    },
+    onSnFocus() {
+      this.focused = true;
+      this.showSnDropdown();
+    },
+    onSnBlur() {
+      this.focused = false;
+      // 延迟关闭，给 click 选中留时间
+      setTimeout(() => { if (!this.focused) this.snDropdown = false; }, 150);
+    },
+    cellClass(ct) {
+      return {
+        'ana-same': ct === 'same',
+        'ana-add': ct === 'add',
+        'ana-remove': ct === 'remove',
+        'ana-replace': ct === 'replace',
+        'ana-none': ct === 'none'
+      };
+    },
+    cellBg(ct) {
+      switch (ct) {
+        case 'add': return '#ecfdf5';       // 极浅绿底
+        case 'remove': return '#fef2f2';    // 极浅红底
+        case 'replace': return '#eff6ff';   // 极浅蓝底
+        default: return '';
+      }
+    },
+    cellColor(ct) {
+      switch (ct) {
+        case 'add': return '#047857';       // 深绿文字
+        case 'remove': return '#dc2626';    // 深红文字
+        case 'replace': return '#1d4ed8';   // 深蓝文字
+        default: return '#1d2939';
+      }
+    }
+  },
+  template: `
+    <div class="yield-page">
+      <div class="page-title">装配分析</div>
+
+      <!-- 查询条件 -->
+      <div class="yield-search">
+        <label>主件SN：</label>
+        <div style="position:relative;display:inline-block;width:320px;">
+          <input class="yield-mat-input" v-model="main_sn" placeholder="输入或选择装配单主件SN"
+                 style="width:320px;padding-right:26px;"
+                 @input="onSnInput" @focus="onSnFocus" @blur="onSnBlur"
+                 @keyup.enter="selectSn(snList[0]?.main_sn || main_sn)">
+          <span v-if="snLoading" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#98a2b3;font-size:12px;">加载中...</span>
+          <!-- 下拉列表 -->
+          <div v-if="snDropdown"
+               style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #d0d5dd;border-radius:8px;box-shadow:0 8px 24px rgba(16,24,40,.08);max-height:320px;overflow-y:auto;z-index:50;">
+            <div v-if="!snList.length && !snLoading" style="padding:14px;color:#98a2b3;font-size:13px;text-align:center;">无匹配结果</div>
+            <div v-for="(s, idx) in snList" :key="idx"
+                 @mousedown.prevent="selectSn(s.main_sn)"
+                 style="padding:10px 12px;cursor:pointer;border-bottom:1px solid #f2f4f7;transition:background .15s;"
+                 @mouseenter="e => e.currentTarget.style.background = '#f9fafb'"
+                 @mouseleave="e => e.currentTarget.style.background = ''">
+              <div style="font-size:14px;font-weight:600;color:#1d2939;">{{ s.main_sn }}</div>
+              <div style="font-size:12px;color:#667085;margin-top:2px;">
+                <span v-if="s.material_name">{{ s.material_name }}</span>
+                <span v-if="s.material_id || s.main_material_id" style="color:#98a2b3;margin-left:6px;">({{ s.main_material_id || s.material_id }})</span>
+                <span v-if="s.assemble_date" style="color:#98a2b3;margin-left:8px;">{{ String(s.assemble_date).slice(0,10) }}</span>
+                <span style="margin-left:6px;padding:1px 6px;border-radius:10px;font-size:11px;"
+                      :style="{ background: s.is_complete == 1 ? '#dcfce7' : '#fef3c7', color: s.is_complete == 1 ? '#166534' : '#92400e' }">
+                  {{ s.is_complete == 1 ? '已完成' : '未完成' }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button @click="query" :disabled="loading">{{ loading ? '查询中...' : '查询' }}</button>
+        <button @click="clearAll">重置</button>
+      </div>
+
+      <template v-if="header">
+        <!-- 装配单信息 -->
+        <div class="yield-header">
+          <div class="yh-card"><div class="yh-label">主件SN</div><div class="yh-value">{{ header.main_sn }}</div></div>
+          <div class="yh-card"><div class="yh-label">主件料号</div><div class="yh-value">{{ header.main_material_id }}</div></div>
+          <div class="yh-card"><div class="yh-label">主件品名</div><div class="yh-value">{{ header.main_material_name || '-' }}</div></div>
+          <div class="yh-card"><div class="yh-label">主件规格</div><div class="yh-value">{{ header.main_material_spec || '-' }}</div></div>
+          <div class="yh-card"><div class="yh-label">BOM版本</div><div class="yh-value">v{{ header.bom_version }}</div></div>
+          <div class="yh-card"><div class="yh-label">装配日期</div><div class="yh-value">{{ header.assemble_date || '-' }}</div></div>
+          <div class="yh-card"><div class="yh-label">操作员</div><div class="yh-value">{{ header.operator || '-' }}</div></div>
+          <div class="yh-card"><div class="yh-label">装配状态</div>
+            <div class="yh-value" :style="{color: header.is_complete == 1 ? '#059669' : '#d97706'}">
+              {{ header.is_complete == 1 ? '已完成' : '未完成' }}
+              <span style="font-size:12px;color:#667085;font-weight:400;">（{{ header.scanned_qty || 0 }}/{{ header.total_slots || 0 }}）</span>
+            </div>
+          </div>
+          <div class="yh-card"><div class="yh-label">历史版本数</div><div class="yh-value">{{ header.history_count }}</div></div>
+          <div class="yh-card"><div class="yh-label">最近修改人</div><div class="yh-value">{{ header.update_by || '-' }}</div></div>
+          <div class="yh-card"><div class="yh-label">最近修改时间</div><div class="yh-value">{{ header.update_time ? String(header.update_time).slice(0,19).replace('T',' ') : '-' }}</div></div>
+        </div>
+
+        <!-- 变更统计 -->
+        <div class="yield-header" v-if="change_summary" style="margin-top:14px;grid-template-columns:repeat(3,1fr);">
+          <div class="yh-card"><div class="yh-label">新扫</div><div class="yh-value big" style="color:#10b981;">{{ change_summary.add }}</div></div>
+          <div class="yh-card"><div class="yh-label">拆卸</div><div class="yh-value big" style="color:#ef4444;">{{ change_summary.remove }}</div></div>
+          <div class="yh-card"><div class="yh-label">替换</div><div class="yh-value big" style="color:#1e88e5;">{{ change_summary.replace }}</div></div>
+        </div>
+
+        <!-- 变更矩阵 -->
+        <div class="yield-section">
+          <div class="yield-section-title">
+            变更记录矩阵
+            <span style="margin-left:12px;display:inline-flex;gap:14px;font-weight:400;font-size:12px;color:#667085;">
+              <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#10b981;border:1px solid #10b981;margin-right:4px;vertical-align:-1px;"></i>新扫</span>
+              <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#ef4444;border:1px solid #ef4444;margin-right:4px;vertical-align:-1px;"></i>拆卸</span>
+              <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#1e88e5;border:1px solid #1e88e5;margin-right:4px;vertical-align:-1px;"></i>替换</span>
+            </span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="ana-table">
+              <thead>
+                <tr>
+                  <th class="pin">元件料号</th>
+                  <th class="pin">元件品名</th>
+                  <th class="pin">元件规格</th>
+                  <th v-for="v in versions" :key="v.version_no" class="ana-th-ver" :class="{'ana-th-current': v.is_current}">
+                    <div style="font-weight:600;">{{ v.label }}</div>
+                    <div style="font-size:11px;color:#667085;margin-top:2px;">{{ v.date }}</div>
+                    <div style="font-size:11px;color:#909399;">{{ v.time }}</div>
+                    <div style="font-size:10px;color:#909399;margin-top:1px;">{{ v.change_by }}</div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, ri) in rows" :key="ri">
+                  <td class="pin">{{ r.component_material_id }}</td>
+                  <td class="pin">{{ r.component_material_name || '-' }}</td>
+                  <td class="pin">{{ r.component_material_spec || '-' }}</td>
+                  <td v-for="c in r.cells" :key="c.version_no"
+                      :class="['ana-cell', cellClass(c.change_type)]"
+                      :style="{ background: cellBg(c.change_type), color: cellColor(c.change_type) }"
+                      :title="c.sn || ''">
+                    <template v-if="c.change_type === 'none'"><span class="ana-cell-none">—</span></template>
+                    <template v-else-if="c.sn"><div class="ana-cell-sn">{{ c.sn }}</div></template>
+                  </td>
+                </tr>
+                <tr v-if="!rows.length"><td :colspan="3 + versions.length" style="text-align:center;color:#909399;padding:20px;">暂无元件数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+
+      <div v-else-if="!loading" class="yield-intro">
+        <div style="font-size:16px;font-weight:600;margin-bottom:10px;">装配分析报表</div>
+        <div style="color:#667085;line-height:1.8;">
+          输入装配单主件SN后点击"查询"，将展示：<br>
+          • 装配单主件信息（料号、品名、规格、BOM版本、完成状态等）<br>
+          • 变更记录矩阵：每行一个元件，每列一个版本<br>
+          • 颜色标识：<span style="color:#10b981;font-weight:600;">绿色=新扫</span>　<span style="color:#1e88e5;font-weight:600;">蓝色=替换</span>　<span style="color:#ef4444;font-weight:600;">红色=拆卸</span>
+        </div>
+      </div>
+    </div>
+  `
+});
+
+// ========== 自定义报表列表 ==========
+Vue.component('page-custom-report', {
+  props: ['ws', 'nav'],
+  data() {
+    return {
+      filters: { report_code: '', report_name: '' },
+      list: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      selectedIds: [],
+      modal: { open: false, mode: 'add', id: null },
+      form: { report_code: '', report_name: '', sql_text: '' },
+      saving: false,
+      msg: '',
+      msgType: ''
+    };
+  },
+  computed: {
+    allChecked: {
+      get() { return this.list.length > 0 && this.list.every(r => this.selectedIds.includes(r.id)); },
+      set(v) { this.selectedIds = v ? this.list.map(r => r.id) : []; }
+    }
+  },
+  methods: {
+    async load() {
+      const res = await this.ws.send('queryCustomReports', { ...this.filters, page: this.page, page_size: this.pageSize });
+      if (res.success) { this.list = res.data.list; this.total = res.data.total; this.selectedIds = []; }
+    },
+    doSearch() { this.page = 1; this.load(); },
+    reset() {
+      this.filters = { report_code: '', report_name: '' };
+      this.page = 1;
+      this.load();
+    },
+    onPageChange(p) { this.page = p; this.load(); },
+    onPageSizeChange(s) { this.pageSize = s; this.page = 1; this.load(); },
+    fmtTime(v) { return v ? String(v).replace('T', ' ').slice(0, 19) : '-'; },
+    openAdd() {
+      this.modal = { open: true, mode: 'add', id: null };
+      this.form = { report_code: '', report_name: '', sql_text: '' };
+      this.msg = '';
+    },
+    openEdit(row) {
+      this.modal = { open: true, mode: 'edit', id: row.id };
+      this.form = {
+        report_code: row.report_code,
+        report_name: row.report_name,
+        sql_text: row.sql_text
+      };
+      this.msg = '';
+    },
+    closeModal() { this.modal.open = false; },
+    async save() {
+      if (this.saving) return;
+      this.msg = '';
+      this.msgType = '';
+      if (this.modal.mode === 'add') {
+        if (!this.form.report_code.trim()) { this.msg = '请填写报表编号'; this.msgType = 'error'; return; }
+      }
+      if (!this.form.report_name.trim()) { this.msg = '请填写报表名称'; this.msgType = 'error'; return; }
+      if (!this.form.sql_text.trim()) { this.msg = '请填写 SQL'; this.msgType = 'error'; return; }
+      this.saving = true;
+      let res;
+      if (this.modal.mode === 'add') {
+        res = await this.ws.send('createCustomReport', {
+          report_code: this.form.report_code.trim(),
+          report_name: this.form.report_name.trim(),
+          sql_text: this.form.sql_text
+        });
+      } else {
+        res = await this.ws.send('updateCustomReport', {
+          id: this.modal.id,
+          report_name: this.form.report_name.trim(),
+          sql_text: this.form.sql_text
+        });
+      }
+      this.saving = false;
+      if (!res.success) { this.msg = res.message || '保存失败'; this.msgType = 'error'; return; }
+      this.msg = '保存成功';
+      this.msgType = 'success';
+      this.modal.open = false;
+      this.load();
+    },
+    async batchDelete() {
+      if (!this.selectedIds.length) return;
+      const ok = confirm(`确认删除选中的 ${this.selectedIds.length} 个自定义报表？此操作不可恢复。`);
+      if (!ok) return;
+      const res = await this.ws.send('deleteCustomReports', { ids: this.selectedIds });
+      if (res.success) {
+        alert(`已删除 ${res.data.deleted} 个报表`);
+        this.load();
+      } else {
+        alert('删除失败：' + res.message);
+      }
+    },
+    openViewer(row) { this.nav('page-custom-report-viewer', { id: row.id }); }
+  },
+  mounted() { this.load(); },
+  template: `
+    <div>
+      <div class="page-title">报表管理 / 自定义报表</div>
+      <div class="panel">
+        <div class="form-row">
+          <label>报表编号：</label><input v-model="filters.report_code" placeholder="模糊" @keyup.enter="doSearch">
+          <label style="margin-left:12px;">报表名称：</label><input v-model="filters.report_name" placeholder="模糊" @keyup.enter="doSearch">
+          <button @click="doSearch" style="margin-left:12px;">查询</button>
+          <button @click="reset" style="margin-left:8px;background:#909399;">重置</button>
+          <button @click="openAdd" style="margin-left:8px;background:#10b981;">+ 新增</button>
+          <button v-if="selectedIds.length > 0" class="danger" style="margin-left:8px;" @click="batchDelete">批量删除（已选 {{ selectedIds.length }} 个）</button>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:16px;">
+        <table style="table-layout:fixed;width:100%;">
+          <thead><tr>
+            <th style="width:40px;"><input type="checkbox" v-model="allChecked" @click.stop></th>
+            <th style="width:60px;">ID</th>
+            <th style="width:18%;">报表编号</th>
+            <th style="width:30%;">报表名称</th>
+            <th style="width:12%;">创建人</th>
+            <th style="width:20%;">创建时间</th>
+            <th style="width:90px;">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="r in list" :key="r.id">
+              <td @click.stop><input type="checkbox" v-model="selectedIds" :value="r.id"></td>
+              <td>{{ r.id }}</td>
+              <td style="white-space:nowrap;">{{ r.report_code }}</td>
+              <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="r.report_name">
+                <a href="javascript:;" @click="openViewer(r)" style="color:#1e88e5;text-decoration:none;">{{ r.report_name }}</a>
+              </td>
+              <td style="white-space:nowrap;">{{ r.create_by || '-' }}</td>
+              <td style="white-space:nowrap;">{{ fmtTime(r.created_time) }}</td>
+              <td style="white-space:nowrap;"><button class="mini" @click="openEdit(r)">修改</button></td>
+            </tr>
+            <tr v-if="!list.length"><td colspan="7" style="text-align:center;color:#909399;">暂无数据</td></tr>
+          </tbody>
+        </table>
+        <vue-pager :page="page" :page-size="pageSize" :total="total"
+                   @change="onPageChange" @size-change="onPageSizeChange"></vue-pager>
+      </div>
+
+      <div v-if="modal.open" class="modal-mask" @click.self="closeModal">
+        <div class="modal" style="max-width:720px;">
+          <div class="modal-title">{{ modal.mode === 'add' ? '新增' : '修改' }}自定义报表
+            <span style="float:right;cursor:pointer;" @click="closeModal">×</span>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label style="width:90px;">报表编号：</label>
+              <input v-model="form.report_code" :disabled="modal.mode === 'edit'" placeholder="唯一编号"
+                     :style="{flex:1, background: modal.mode === 'edit' ? '#f5f7fa' : '', color: modal.mode === 'edit' ? '#909399' : ''}">
+            </div>
+            <div class="form-row" style="margin-top:10px;">
+              <label style="width:90px;">报表名称：</label>
+              <input v-model="form.report_name" placeholder="报表名称" style="flex:1;">
+            </div>
+            <div class="form-row" style="margin-top:10px;align-items:flex-start;">
+              <label style="width:90px;line-height:30px;">SQL：</label>
+              <textarea v-model="form.sql_text" rows="8" placeholder="仅支持 SELECT 查询语句"
+                        style="flex:1;font-family:Consolas,monospace;font-size:13px;"></textarea>
+            </div>
+            <div v-if="msg" :style="{marginTop:'10px', fontSize:'13px', color: msgType === 'error' ? '#dc2626' : '#10b981'}">{{ msg }}</div>
+          </div>
+          <div class="modal-footer">
+            <button @click="closeModal" style="background:#909399;">取消</button>
+            <button @click="save" :disabled="saving" style="margin-left:8px;">{{ saving ? '保存中...' : '保存' }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+});
+
+// ========== 自定义报表数据展示 ==========
+Vue.component('page-custom-report-viewer', {
+  props: ['ws', 'nav', 'params'],
+  data() {
+    return {
+      report: { report_code: '', report_name: '', columns: [], rows: [] },
+      loading: false,
+      errMsg: '',
+      exporting: false
+    };
+  },
+  watch: {
+    'params.id'() { this.load(); }
+  },
+  methods: {
+    async load() {
+      if (!this.params || !this.params.id) { this.errMsg = '缺少报表ID'; return; }
+      this.loading = true;
+      this.errMsg = '';
+      const res = await this.ws.send('getCustomReportData', { id: this.params.id });
+      this.loading = false;
+      if (!res.success) { this.errMsg = res.message || '加载失败'; return; }
+      this.report = res.data;
+    },
+    fmt(v) {
+      if (v === null || v === undefined) return '';
+      if (v instanceof Date) return v.toLocaleString();
+      return String(v);
+    },
+    exportExcel() {
+      if (this.exporting || !this.report.columns.length) return;
+      this.exporting = true;
+      try {
+        // 用 aoa_to_sheet 保证列顺序与表头一致
+        const aoa = [this.report.columns.slice()];
+        this.report.rows.forEach(row => {
+          aoa.push(this.report.columns.map(c => this.fmt(row[c])));
+        });
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        // 自适应列宽（按每列最长字符数估算）
+        const colWidths = this.report.columns.map((c, ci) => {
+          let max = String(c).length;
+          aoa.slice(1).forEach(r => { const len = String(r[ci] == null ? '' : r[ci]).length; if (len > max) max = len; });
+          return { wch: Math.min(Math.max(max + 2, 10), 60) };
+        });
+        ws['!cols'] = colWidths;
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '报表数据');
+        const fname = `${this.report.report_name || '报表数据'}_${this.report.report_code || ''}.xlsx`;
+        XLSX.writeFile(wb, fname);
+      } catch (e) {
+        alert('导出失败：' + (e.message || e));
+      } finally {
+        this.exporting = false;
+      }
+    }
+  },
+  mounted() { this.load(); },
+  template: `
+    <div>
+      <div class="page-title">
+        报表数据：{{ report.report_name }}
+        <span style="font-size:13px;color:#667085;font-weight:400;margin-left:10px;">（{{ report.report_code }}）</span>
+      </div>
+      <div v-if="loading" class="panel" style="text-align:center;color:#909399;padding:30px;">加载中...</div>
+      <div v-else-if="errMsg" class="panel" style="color:#dc2626;padding:20px;">{{ errMsg }}</div>
+      <div v-else class="panel" style="overflow-x:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="color:#667085;font-size:13px;">共 {{ report.rows.length }} 行（最多展示 1000 行）</div>
+          <button @click="exportExcel" :disabled="exporting || !report.rows.length" style="background:#10b981;">
+            {{ exporting ? '导出中...' : '导出 Excel' }}
+          </button>
+        </div>
+        <table v-if="report.columns.length" style="width:100%;font-size:13px;white-space:nowrap;">
+          <thead><tr>
+            <th v-for="(c, i) in report.columns" :key="i" style="background:#f5f7fa;">{{ c }}</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="(row, ri) in report.rows" :key="ri">
+              <td v-for="(c, ci) in report.columns" :key="ci">{{ fmt(row[c]) }}</td>
+            </tr>
+            <tr v-if="!report.rows.length"><td :colspan="report.columns.length" style="text-align:center;color:#909399;">暂无数据</td></tr>
+          </tbody>
+        </table>
+        <div v-else style="text-align:center;color:#909399;padding:20px;">无数据</div>
       </div>
     </div>
   `

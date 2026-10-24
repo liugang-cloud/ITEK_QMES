@@ -6,6 +6,7 @@
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <script src="js/vue.min.js"></script>
   <script src="js/qrcode.min.js"></script>
+  <script src="js/xlsx.full.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; font-size: 14px; color: #344054; background: #f3f5f9; }
@@ -258,7 +259,7 @@
     .login-btn { width: 100%; padding: 10px 0; font-size: 15px; letter-spacing: 4px; }
     .topbar .logout-link {
       margin-left: 10px; padding-left: 10px; border-left: 1px solid rgba(255,255,255,.45);
-      cursor: pointer; text-decoration: underline;
+      cursor: pointer; 
     }
     .topbar .logout-link:hover { color: #ffe082; }
 
@@ -330,6 +331,11 @@
     .arch-wrap .chain:last-child{border-bottom:none}
     .arch-wrap .chain .arr{color:#b6c2d2;font-size:12px;font-family:var(--font-mono)}
     .arch-wrap .chain .chain-none{color:#c0c8d4;font-size:12px}
+    .arch-wrap .steps-group .step-line{display:flex;gap:8px;padding:3px 0;border-bottom:1px dashed #f0f3f8}
+    .arch-wrap .steps-group .step-line:last-child{border-bottom:none}
+    .arch-wrap .steps-group .step-no{flex-shrink:0;width:18px;height:18px;border-radius:50%;background:#e8f1fd;color:#0d47a1;
+      font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-family:var(--font-mono);margin-top:2px}
+    .arch-wrap .steps-group .step-text{font-size:12.5px;color:var(--ink);line-height:1.7}
     .arch-wrap .ftab{width:100%;border-collapse:collapse;font-size:12.5px}
     .arch-wrap .ftab th{text-align:left;padding:6px 8px;background:#eef2f8;color:#475467;font-size:11.5px;font-weight:700}
     .arch-wrap .ftab td{padding:5px 8px;border-bottom:1px solid #f0f3f8;font-family:var(--font-mono)}
@@ -338,6 +344,199 @@
       .arch-wrap .layout{grid-template-columns:1fr}
       .arch-wrap .detail{position:static;max-height:none}
     }
+
+    /* ===== 良率分析 ===== */
+    .yield-page .yield-search {
+      display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+      padding: 14px 18px; background: #f8fafc; border: 1px solid #e4e9f2;
+      border-radius: 8px; margin-bottom: 16px;
+    }
+    .yield-page .yield-search label { font-size: 14px; color: #344054; font-weight: 500; }
+    .yield-page .yield-search select,
+    .yield-page .yield-search input[type="date"] {
+      padding: 7px 12px; border: 1px solid #d0d5dd; border-radius: 6px;
+      font-size: 14px; color: #344054; background: #fff; outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .yield-page .yield-search select:focus,
+    .yield-page .yield-search input:focus { border-color: #1e88e5; box-shadow: 0 0 0 3px rgba(30, 136, 229, .12); }
+    .yield-page .yield-search button {
+      padding: 8px 20px; border-radius: 6px; font-size: 14px; font-weight: 500;
+      cursor: pointer; border: 1px solid; transition: all .2s;
+    }
+    .yield-page .yield-search button[disabled] { opacity: .5; cursor: not-allowed; }
+    .yield-page .yield-search button:first-of-type {
+      background: linear-gradient(180deg, #2196f3, #1e88e5); color: #fff; border: none;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .1);
+    }
+    .yield-page .yield-search button:first-of-type:hover:not([disabled]) {
+      background: linear-gradient(180deg, #1e88e5, #1976d2); box-shadow: 0 2px 6px rgba(30, 136, 229, .35);
+    }
+    .yield-page .yield-search button:last-of-type {
+      background: #fff; color: #344054; border-color: #d0d5dd;
+    }
+    .yield-page .yield-search button:last-of-type:hover { background: #f2f4f7; }
+
+    .yield-page .yield-header {
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px;
+    }
+    .yield-page .yh-card {
+      background: #fff; border: 1px solid #e4e9f2; border-radius: 10px;
+      padding: 12px 14px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+    }
+    .yield-page .yh-label { font-size: 12px; color: #667085; margin-bottom: 6px; font-weight: 500; }
+    .yield-page .yh-value { font-size: 14px; color: #1d2939; font-weight: 600; word-break: break-all; }
+    .yield-page .yh-value.big { font-size: 22px; font-weight: 700; }
+
+    .yield-page .yield-section { margin-bottom: 24px; }
+    .yield-page .yield-section-title {
+      font-size: 14px; font-weight: 700; color: #1d2939; margin-bottom: 12px;
+      padding-left: 10px; border-left: 3px solid #1565c0;
+    }
+    .yield-page .yield-empty {
+      text-align: center; padding: 40px; color: #667085; background: #fff;
+      border: 1px dashed #d0d5dd; border-radius: 8px;
+    }
+    .yield-page .yield-intro {
+      background: #fff; border: 1px solid #e4e9f2; border-radius: 10px;
+      padding: 40px; text-align: center;
+    }
+
+    /* 检验项目表格 */
+    .yield-page .yield-table {
+      width: 100%; border-collapse: collapse; font-size: 13px; background: #fff;
+      border-radius: 8px; overflow: hidden; border: 1px solid #e4e9f2;
+    }
+    .yield-page .yield-table th {
+      background: #f7f9fc; color: #667085; font-size: 13px; font-weight: bold;
+      padding: 11px 14px; text-align: left; border-bottom: 1px solid #eef1f5;
+    }
+    .yield-page .yield-table td {
+      padding: 11px 14px; border-bottom: 1px solid #eef1f5; color: #344054;
+    }
+    .yield-page .yield-table tr:last-child td { border-bottom: none; }
+    .yield-page .yield-table tr:hover td { background: #f7fafd; }
+
+    /* 表格内条形良率 */
+    .yield-page .yield-bar-cell { display: flex; align-items: center; gap: 8px; }
+    .yield-page .yield-bar-track {
+      flex: 1; height: 10px; background: #f2f4f7; border-radius: 5px; overflow: hidden;
+    }
+    .yield-page .yield-bar-fill { height: 100%; border-radius: 5px; transition: width .3s; }
+    .yield-page .yield-bar-pct { font-size: 12px; font-weight: 700; min-width: 42px; text-align: right; }
+
+    /* 良率分布图 */
+    .yield-page .yield-chart {
+      background: #fff; border: 1px solid #e4e9f2; border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .yield-page .yield-chart-bar {
+      display: grid; grid-template-columns: 140px 1fr 70px 70px;
+      gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px dashed #f0f3f8;
+    }
+    .yield-page .yield-chart-bar:last-child { border-bottom: none; }
+    .yield-page .yield-chart-info { min-width: 0; }
+    .yield-page .yield-chart-name {
+      font-size: 13px; font-weight: 600; color: #1d2939;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .yield-page .yield-chart-sub { font-size: 11px; color: #98a2b3; font-family: monospace; }
+    .yield-page .yield-chart-bar-body {
+      height: 18px; background: #f2f4f7; border-radius: 9px; overflow: hidden;
+    }
+    .yield-page .yield-chart-bar-fill {
+      height: 100%; border-radius: 9px; transition: width .4s ease;
+    }
+    .yield-page .yield-chart-pct { font-size: 14px; font-weight: 700; text-align: right; }
+    .yield-page .yield-chart-count { font-size: 12px; color: #667085; text-align: right; }
+
+    /* 物料搜索选择器 */
+    .yield-page .yield-mat-select { position: relative; min-width: 300px; }
+    .yield-page .yield-mat-input-row { position: relative; display: flex; align-items: center; }
+    .yield-page .yield-mat-input {
+      width: 100%; padding: 7px 28px 7px 12px; border: 1px solid #d0d5dd;
+      border-radius: 6px; font-size: 14px; color: #344054; background: #fff; outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .yield-page .yield-mat-input:focus { border-color: #1e88e5; box-shadow: 0 0 0 3px rgba(30, 136, 229, .12); }
+    .yield-page .yield-mat-clear {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      width: 18px; height: 18px; border-radius: 50%; text-align: center; line-height: 16px;
+      font-size: 13px; color: #98a2b3; cursor: pointer; user-select: none;
+    }
+    .yield-page .yield-mat-clear:hover { background: #f2f4f7; color: #344054; }
+    .yield-page .yield-mat-dropdown {
+      position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+      background: #fff; border: 1px solid #d0d5dd; border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(16,24,40,.08);
+      max-height: 320px; overflow-y: auto; z-index: 999;
+    }
+    .yield-page .yield-mat-empty { padding: 20px; text-align: center; color: #98a2b3; font-size: 13px; }
+    .yield-page .yield-mat-option {
+      padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #f2f4f7;
+    }
+    .yield-page .yield-mat-option:last-child { border-bottom: none; }
+    .yield-page .yield-mat-option:hover,
+    .yield-page .yield-mat-option.sel { background: #f0f7ff; }
+    .yield-page .yield-mat-option.sel .yield-mat-opt-id { color: #1565c0; }
+    .yield-page .yield-mat-opt-id { font-family: monospace; font-size: 12.5px; color: #1d2939; font-weight: 600; }
+    .yield-page .yield-mat-opt-name { font-size: 12.5px; color: #667085; margin-top: 2px; }
+    .yield-page .yield-mat-opt-spec { color: #98a2b3; }
+
+    @media (max-width: 980px) {
+      .yield-page .yield-header { grid-template-columns: repeat(3, 1fr); }
+      .yield-page .yield-chart-bar { grid-template-columns: 100px 1fr 60px 60px; }
+    }
+
+    /* === 装配分析 === */
+    /* 顶部信息卡片与搜索条复用良率分析的 .yield-search / .yield-header / .yh-card / .yield-section 等通用样式 */
+
+    /* 变更矩阵表格 */
+    .ana-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: #fff; }
+    .ana-table th, .ana-table td {
+      border: 1px solid #eef1f5;
+      padding: 8px 10px; text-align: center; white-space: nowrap;
+    }
+    .ana-table thead th {
+      background: #f7f9fc; font-weight: bold; color: #667085; font-size: 13px;
+      vertical-align: top; border-bottom: 1px solid #eef1f5;
+    }
+    /* 三个冻结列：固定宽度，th/td 同样定位，避免重叠 */
+    .ana-table th.pin, .ana-table td.pin {
+      position: sticky; z-index: 3; text-align: center; vertical-align: middle;
+      background: #fff; overflow: hidden; text-overflow: ellipsis;
+    }
+    .ana-table th.pin {
+      z-index: 5; background: #f7f9fc !important; color: #667085;
+    }
+    .ana-table th.pin:nth-child(1), .ana-table td.pin:nth-child(1) { left: 0;   width: 150px; min-width: 150px; max-width: 150px; }
+    .ana-table th.pin:nth-child(2), .ana-table td.pin:nth-child(2) { left: 150px; width: 140px; min-width: 140px; max-width: 140px; }
+    .ana-table th.pin:nth-child(3), .ana-table td.pin:nth-child(3) {
+      left: 290px; width: 150px; min-width: 150px; max-width: 150px;
+      box-shadow: 6px 0 6px -6px rgba(0,0,0,0.15);
+    }
+    /* 版本列表头 */
+    .ana-th-ver { min-width: 132px; position: relative; }
+    .ana-th-current { background: #eaf2fb !important; color: #1565c0; }
+    .ana-th-current::after {
+      content: "●"; position: absolute; top: 6px; right: 8px;
+      font-size: 8px; color: #1565c0;
+    }
+    /* hover */
+    .ana-table tbody tr:hover td { background: #f7fafd; }
+    .ana-table tbody tr:hover td.pin { background: #f7fafd !important; }
+    /* 单元格 */
+    .ana-cell {
+      position: relative; min-width: 140px; max-width: 220px;
+      font-size: 12px; line-height: 1.35;
+    }
+    .ana-cell-sn {
+      white-space: nowrap; font-size: 11px; margin: 0 auto; font-weight: 500;
+    }
+    .ana-cell-empty, .ana-cell-none {
+      font-size: 11px; opacity: .55; line-height: 1.5;
+    }
+    .ana-none { color: #c0c4cc !important; background: #e8e8e8 !important; }
   </style>
 </head>
 <body>
@@ -407,7 +606,7 @@
     </template>
   </div>
 
-  <script src="js/components.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/components.js?v=20261024n"></script>
+  <script src="js/app.js?v=20261024n"></script>
 </body>
 </html>
