@@ -61,7 +61,8 @@ const OPERATOR_FIELDS = {
   importMaterials: ['create_by'],
   importBom: ['create_by'],
   createCustomReport: ['create_by'],
-  updateCustomReport: ['update_by']
+  updateCustomReport: ['update_by'],
+  applyMultiBomEcn: ['update_by']
 };
 
 // WebSocket 服务：业务接口
@@ -236,6 +237,9 @@ wss.on('connection', (ws) => {
           break;
         case 'updateBomDetail':
           result = await api.updateBomDetail(data || {});
+          break;
+        case 'applyMultiBomEcn':
+          result = await api.applyMultiBomEcn(data || {});
           break;
         case 'queryBomHistory':
           result = await api.queryBomHistory(data || {});

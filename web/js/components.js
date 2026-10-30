@@ -448,7 +448,7 @@ Vue.component('page-records', {
           <thead>
             <tr>
               <th style="width:36px;"><input type="checkbox" v-model="allChecked" @click.stop></th>
-              <th>料号</th><th>物料名称</th><th>SN号</th><th>检验日期</th><th>检验员</th><th>检验结果</th><th>处理结果</th><th>是否完成</th>
+              <th>料号</th><th>物料名称</th><th>规格</th><th>SN号</th><th>检验日期</th><th>检验员</th><th>检验结果</th><th>处理结果</th><th>是否完成</th>
             </tr>
           </thead>
           <tbody>
@@ -456,6 +456,7 @@ Vue.component('page-records', {
               <td @click.stop><input type="checkbox" v-model="selectedIds" :value="r.id"></td>
               <td>{{ r.material_id }}</td>
               <td>{{ r.material_name }}</td>
+              <td>{{ r.material_spec || '-' }}</td>
               <td><a href="javascript:;" @click="nav('page-record-detail', { sn: r.batch_no })" style="color:#1e88e5;text-decoration:none;">{{ r.batch_no }}</a></td>
               <td>{{ r.inspect_date ? r.inspect_date.slice(0,10) : '-' }}</td>
               <td>{{ r.inspector || '-' }}</td>
@@ -469,7 +470,7 @@ Vue.component('page-records', {
               </td>
               <td :style="{color: r.is_complete == 1 ? '#059669' : '#d97706', fontWeight: 600}">{{ r.is_complete == 1 ? '已完成' : '未完成' }}（{{ r.scanned_qty || 0 }}/{{ r.required_qty || 0 }}）</td>
             </tr>
-            <tr v-if="!list.length"><td colspan="9" style="text-align:center;color:#909399;">暂无数据</td></tr>
+            <tr v-if="!list.length"><td colspan="10" style="text-align:center;color:#909399;">暂无数据</td></tr>
           </tbody>
         </table>
         <vue-pager :page="page" :page-size="pageSize" :total="total"
@@ -1822,6 +1823,7 @@ Vue.component('page-bom', {
         </div>
         <button @click="doSearch">查询</button>
         <button @click="nav('page-bom-add')">新增BOM</button>
+        <button @click="nav('page-bom-ecn')">多主件ECN</button>
         <button @click="triggerImport">导入</button>
         <input ref="importFB" type="file" accept=".xlsx,.xls" style="display:none" @change="onImportFile">
         <div v-if="importMsg" :class="['tip', importMsgType]" style="margin-top:12px;">
@@ -3458,11 +3460,11 @@ Vue.component('page-arch', {
       try {
         // 1. 数据模型（只加载一次）
         if (!window.QMES_DIAGRAM_DATA) {
-          await this.loadScript('js/diagram.js?v=20261024n');
+          await this.loadScript('js/diagram.js?v=20261024r');
         }
         // 2. 渲染逻辑（只加载一次，定义 window.renderArchFlat）
         if (typeof window.renderArchFlat !== 'function') {
-          await this.loadScript('js/flat.js?v=20261024n');
+          await this.loadScript('js/flat.js?v=20261024r');
         }
         // 3. 渲染到当前组件容器
         if (typeof window.renderArchFlat === 'function') {
@@ -4077,7 +4079,7 @@ Vue.component('page-custom-report', {
   mounted() { this.load(); },
   template: `
     <div>
-      <div class="page-title">报表管理 / 自定义报表</div>
+      <div class="page-title">自定义报表</div>
       <div class="panel">
         <div class="form-row">
           <label>报表编号：</label><input v-model="filters.report_code" placeholder="模糊" @keyup.enter="doSearch">
@@ -4235,6 +4237,324 @@ Vue.component('page-custom-report-viewer', {
           </tbody>
         </table>
         <div v-else style="text-align:center;color:#909399;padding:20px;">无数据</div>
+      </div>
+    </div>
+  `
+});
+
+// ========== 多主件ECN（工程变更通知） ==========
+Vue.component('page-bom-ecn', {
+  props: ['ws', 'nav'],
+  data() {
+    return {
+      materialOptions: [],
+      // 左侧 ECN 内容：元件（可搜索下拉）
+      selComponent: '',
+      componentKeyword: '',
+      componentFocused: false,
+      selType: 'disable',   // disable=失效 / add=新增
+      selQty: 1,
+      ecnItems: [],         // [{ component_material, component_name, change_type, quantity }]
+      // 右侧：手动添加主件（可搜索下拉）
+      addParentId: '',
+      parentKeyword: '',
+      parentFocused: false,
+      // 右侧：按元件添加主件（可搜索下拉 + 按钮）
+      searchComponent: '',
+      searchKeyword: '',
+      searchFocused: false,
+      parentMaterials: [],  // [{ parent_material_id, parent_material_name }]
+      // 提交状态
+      message: '', msgType: '', submitting: false,
+      resultDetails: []
+    };
+  },
+  computed: {
+    selectedComponent() { return this.matObj(this.selComponent); },
+    selectedParent() { return this.matObj(this.addParentId); },
+    selectedSearch() { return this.matObj(this.searchComponent); }
+  },
+  mounted() {
+    this.loadMaterials();
+    document.addEventListener('click', this.onDocClick);
+  },
+  beforeDestroy() {
+    document.removeEventListener('click', this.onDocClick);
+  },
+  methods: {
+    showMsg(type, text) { this.msgType = type; this.message = text; },
+    async loadMaterials() {
+      const res = await this.ws.send('queryMaterials', { is_active: 1, page_size: 9999 });
+      if (res.success) this.materialOptions = res.data.list || [];
+    },
+    matObj(id) { return this.materialOptions.find(o => o.material_id === id) || null; },
+    matName(id) { const m = this.matObj(id); return m ? (m.material_name || '') : ''; },
+    matSpec(id) { const m = this.matObj(id); return m ? (m.material_spec || '') : ''; },
+    filterMaterials(kw) {
+      const k = (kw || '').trim().toLowerCase();
+      const src = this.materialOptions || [];
+      if (!k) return src.slice(0, 80);
+      return src.filter(m =>
+        (m.material_id || '').toLowerCase().indexOf(k) >= 0 ||
+        (m.material_name || '').toLowerCase().indexOf(k) >= 0 ||
+        (m.material_spec || '').toLowerCase().indexOf(k) >= 0
+      ).slice(0, 80);
+    },
+    onDocClick(e) {
+      [['componentSelect', 'componentFocused'], ['parentSelect', 'parentFocused'], ['searchSelect', 'searchFocused']].forEach(([ref, key]) => {
+        const el = this.$refs[ref];
+        if (el && !el.contains(e.target)) this[key] = false;
+      });
+    },
+    // --- 元件下拉 ---
+    selectComponent(m) { this.selComponent = m.material_id; this.componentKeyword = ''; this.componentFocused = false; },
+    clearComponent() { this.selComponent = ''; this.componentKeyword = ''; },
+    focusComponent() {
+      this.componentFocused = true;
+      if (this.selComponent && !this.componentKeyword) {
+        const m = this.matObj(this.selComponent);
+        this.componentKeyword = m ? m.material_id + ' - ' + m.material_name : '';
+      }
+    },
+    inputComponent() {
+      const m = this.matObj(this.selComponent);
+      const full = m ? m.material_id + ' - ' + m.material_name : '';
+      if (this.selComponent && this.componentKeyword !== full) this.selComponent = '';
+    },
+    // --- 主件下拉 ---
+    selectParent(m) { this.addParentId = m.material_id; this.parentKeyword = ''; this.parentFocused = false; },
+    clearParent() { this.addParentId = ''; this.parentKeyword = ''; },
+    focusParent() {
+      this.parentFocused = true;
+      if (this.addParentId && !this.parentKeyword) {
+        const m = this.matObj(this.addParentId);
+        this.parentKeyword = m ? m.material_id + ' - ' + m.material_name : '';
+      }
+    },
+    inputParent() {
+      const m = this.matObj(this.addParentId);
+      const full = m ? m.material_id + ' - ' + m.material_name : '';
+      if (this.addParentId && this.parentKeyword !== full) this.addParentId = '';
+    },
+    // --- 按元件下拉 ---
+    selectSearch(m) { this.searchComponent = m.material_id; this.searchKeyword = ''; this.searchFocused = false; },
+    clearSearch() { this.searchComponent = ''; this.searchKeyword = ''; },
+    focusSearch() {
+      this.searchFocused = true;
+      if (this.searchComponent && !this.searchKeyword) {
+        const m = this.matObj(this.searchComponent);
+        this.searchKeyword = m ? m.material_id + ' - ' + m.material_name : '';
+      }
+    },
+    inputSearch() {
+      const m = this.matObj(this.searchComponent);
+      const full = m ? m.material_id + ' - ' + m.material_name : '';
+      if (this.searchComponent && this.searchKeyword !== full) this.searchComponent = '';
+    },
+    addEcnItem() {
+      const comp = (this.selComponent || '').trim();
+      if (!comp) { this.showMsg('err', '请选择元件'); return; }
+      const qty = this.selType === 'add' ? Number(this.selQty) : null;
+      if (this.selType === 'add' && !(qty > 0)) { this.showMsg('err', '用量必须为正数'); return; }
+      if (this.ecnItems.some(i => i.component_material === comp && i.change_type === this.selType)) {
+        this.showMsg('err', '该元件已按此方式添加');
+        return;
+      }
+      this.ecnItems.push({
+        component_material: comp,
+        component_name: this.matName(comp),
+        change_type: this.selType,
+        quantity: this.selType === 'add' ? qty : null
+      });
+      this.selComponent = '';
+      this.componentKeyword = '';
+      this.selQty = 1;
+      this.message = '';
+    },
+    removeEcnItem(i) { this.ecnItems.splice(i, 1); },
+    addParent() {
+      const pid = (this.addParentId || '').trim();
+      if (!pid) { this.showMsg('err', '请选择主件'); return; }
+      if (this.parentMaterials.some(p => p.parent_material_id === pid)) {
+        this.showMsg('err', '该主件已添加');
+        return;
+      }
+      this.parentMaterials.push({ parent_material_id: pid, parent_material_name: this.matName(pid) });
+      this.addParentId = '';
+      this.parentKeyword = '';
+    },
+    removeParent(i) { this.parentMaterials.splice(i, 1); },
+    async addParentsByComponent() {
+      const comp = this.searchComponent;
+      if (!comp) { this.showMsg('err', '请先选择元件'); return; }
+      const res = await this.ws.send('queryBomParentList', { component_material: comp, page_size: 9999 });
+      let added = 0;
+      if (res.success && res.data && res.data.list) {
+        res.data.list.forEach(s => {
+          if (!this.parentMaterials.some(p => p.parent_material_id === s.parent_material_id)) {
+            this.parentMaterials.push({
+              parent_material_id: s.parent_material_id,
+              parent_material_name: s.parent_material_name || '-'
+            });
+            added++;
+          }
+        });
+      }
+      this.showMsg('ok', added ? `已按元件 ${comp} 带出 ${added} 个主件并加入列表` : '该元件未关联到任何主件');
+      this.searchComponent = '';
+      this.searchKeyword = '';
+    },
+    async submit() {
+      this.message = ''; this.resultDetails = [];
+      if (!this.ecnItems.length) { this.showMsg('err', '请至少添加一条变更内容'); return; }
+      if (!this.parentMaterials.length) { this.showMsg('err', '请至少添加一个主件'); return; }
+
+      this.submitting = true;
+      const res = await this.ws.send('applyMultiBomEcn', {
+        ecn_items: this.ecnItems.map(it => ({
+          component_material: it.component_material,
+          change_type: it.change_type,
+          quantity: it.change_type === 'add' ? it.quantity : undefined
+        })),
+        parent_material_ids: this.parentMaterials.map(p => p.parent_material_id)
+      });
+      this.submitting = false;
+
+      if (!res.success) {
+        this.showMsg('err', res.message || '变更失败');
+        if (res.data && res.data.errors) {
+          this.resultDetails = res.data.errors.map(e => ({ type: 'err', text: e }));
+        }
+        return;
+      }
+      this.showMsg('ok', `ECN 变更完成，共处理 ${res.data.count} 个主件`);
+    }
+  },
+  template: `
+    <div class="bom-ecn">
+      <div class="page-title">多主件ECN（工程变更通知）</div>
+      <div class="page-title" style="font-size:13px;color:#667085;font-weight:400;padding-bottom:4px;">
+        对多个主件的 BOM 统一做元件失效 / 新增变更，变更前自动归档历史版本
+      </div>
+
+      <div v-if="message" :class="['tip', msgType]" style="margin-top:12px;">{{ message }}</div>
+      <div v-if="resultDetails.length" class="panel" style="margin-top:12px;background:#f9fafb;">
+        <div style="font-weight:600;margin-bottom:6px;">处理明细</div>
+        <div v-for="(d,i) in resultDetails" :key="i" :style="{ color: d.type === 'ok' ? '#10b981' : '#dc2626' }">{{ d.text }}</div>
+      </div>
+
+      <div style="display:flex;gap:16px;align-items:flex-start;margin-top:16px;flex-wrap:wrap;">
+        <!-- 左：ECN 内容 -->
+        <div class="panel" style="flex:1;min-width:440px;">
+          <div style="font-weight:600;margin-bottom:10px;">ECN 内容（变更明细）</div>
+          <div class="form-row">
+            <label>元件料号：</label>
+            <div class="ecn-mat-select" ref="componentSelect">
+              <div class="ecn-mat-input-row">
+                <input class="ecn-mat-input" type="text" v-model="componentKeyword"
+                       :placeholder="selectedComponent ? selectedComponent.material_id + ' - ' + selectedComponent.material_name : '输入料号或名称搜索...'"
+                       @focus="focusComponent" @input="inputComponent" @keydown.enter.prevent="componentFocused = false">
+                <span v-if="selComponent" class="ecn-mat-clear" @click="clearComponent">×</span>
+              </div>
+              <div v-if="componentFocused && filterMaterials(componentKeyword).length" class="ecn-mat-dropdown">
+                <div v-for="m in filterMaterials(componentKeyword)" :key="m.material_id" class="ecn-mat-option"
+                     :class="{ sel: m.material_id === selComponent }" @mousedown.prevent="selectComponent(m)">
+                  <div class="ecn-mat-opt-id">{{ m.material_id }}</div>
+                  <div class="ecn-mat-opt-name">{{ m.material_name }}<span v-if="m.material_spec" class="ecn-mat-opt-spec"> · {{ m.material_spec }}</span></div>
+                </div>
+              </div>
+              <div v-else-if="componentFocused && componentKeyword && !filterMaterials(componentKeyword).length" class="ecn-mat-dropdown ecn-mat-empty">没有匹配的物料</div>
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:8px;">
+            <label>变更方式：</label>
+            <select v-model="selType">
+              <option value="disable">失效</option>
+              <option value="add">新增</option>
+            </select>
+            <template v-if="selType === 'add'">
+              <label style="margin-left:8px;">用量：</label>
+              <input v-model.number="selQty" type="number" min="0" step="any" style="width:80px;">
+            </template>
+            <button @click="addEcnItem">添加明细</button>
+          </div>
+          <table style="margin-top:10px;">
+            <thead><tr><th>元件料号</th><th>元件名称</th><th>规格</th><th>变更方式</th><th>用量</th><th style="width:60px;">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="(it,i) in ecnItems" :key="i">
+                <td>{{ it.component_material }}</td>
+                <td>{{ it.component_name || '-' }}</td>
+                <td>{{ matSpec(it.component_material) || '-' }}</td>
+                <td><span :style="{ color: it.change_type === 'disable' ? '#dc2626' : '#10b981', fontWeight:'600' }">{{ it.change_type === 'disable' ? '失效' : '新增' }}</span></td>
+                <td>{{ it.change_type === 'add' ? it.quantity : '-' }}</td>
+                <td><a href="javascript:;" @click="removeEcnItem(i)" style="color:#dc2626;">删除</a></td>
+              </tr>
+              <tr v-if="!ecnItems.length"><td colspan="6" style="text-align:center;color:#909399;">尚未添加变更内容</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 右：变更范围 -->
+        <div class="panel" style="flex:1;min-width:440px;">
+          <div style="font-weight:600;margin-bottom:10px;">变更范围（主件）</div>
+          <div class="form-row">
+            <label>主件料号：</label>
+            <div class="ecn-mat-select" ref="parentSelect">
+              <div class="ecn-mat-input-row">
+                <input class="ecn-mat-input" type="text" v-model="parentKeyword"
+                       :placeholder="selectedParent ? selectedParent.material_id + ' - ' + selectedParent.material_name : '输入料号或名称搜索...'"
+                       @focus="focusParent" @input="inputParent" @keydown.enter.prevent="parentFocused = false">
+                <span v-if="addParentId" class="ecn-mat-clear" @click="clearParent">×</span>
+              </div>
+              <div v-if="parentFocused && filterMaterials(parentKeyword).length" class="ecn-mat-dropdown">
+                <div v-for="m in filterMaterials(parentKeyword)" :key="m.material_id" class="ecn-mat-option"
+                     :class="{ sel: m.material_id === addParentId }" @mousedown.prevent="selectParent(m)">
+                  <div class="ecn-mat-opt-id">{{ m.material_id }}</div>
+                  <div class="ecn-mat-opt-name">{{ m.material_name }}<span v-if="m.material_spec" class="ecn-mat-opt-spec"> · {{ m.material_spec }}</span></div>
+                </div>
+              </div>
+              <div v-else-if="parentFocused && parentKeyword && !filterMaterials(parentKeyword).length" class="ecn-mat-dropdown ecn-mat-empty">没有匹配的物料</div>
+            </div>
+            <button @click="addParent">添加主件</button>
+          </div>
+          <div class="form-row" style="margin-top:8px;">
+            <label>按元件添主件：</label>
+            <div class="ecn-mat-select" ref="searchSelect">
+              <div class="ecn-mat-input-row">
+                <input class="ecn-mat-input" type="text" v-model="searchKeyword"
+                       :placeholder="selectedSearch ? selectedSearch.material_id + ' - ' + selectedSearch.material_name : '输入元件料号或名称搜索...'"
+                       @focus="focusSearch" @input="inputSearch" @keydown.enter.prevent="searchFocused = false">
+                <span v-if="searchComponent" class="ecn-mat-clear" @click="clearSearch">×</span>
+              </div>
+              <div v-if="searchFocused && filterMaterials(searchKeyword).length" class="ecn-mat-dropdown">
+                <div v-for="m in filterMaterials(searchKeyword)" :key="m.material_id" class="ecn-mat-option"
+                     :class="{ sel: m.material_id === searchComponent }" @mousedown.prevent="selectSearch(m)">
+                  <div class="ecn-mat-opt-id">{{ m.material_id }}</div>
+                  <div class="ecn-mat-opt-name">{{ m.material_name }}<span v-if="m.material_spec" class="ecn-mat-opt-spec"> · {{ m.material_spec }}</span></div>
+                </div>
+              </div>
+              <div v-else-if="searchFocused && searchKeyword && !filterMaterials(searchKeyword).length" class="ecn-mat-dropdown ecn-mat-empty">没有匹配的物料</div>
+            </div>
+            <button @click="addParentsByComponent">带出主件</button>
+          </div>
+          <table style="margin-top:10px;">
+            <thead><tr><th>主件料号</th><th>主件名称</th><th>规格</th><th style="width:60px;">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="(p,i) in parentMaterials" :key="i">
+                <td>{{ p.parent_material_id }}</td>
+                <td>{{ p.parent_material_name || '-' }}</td>
+                <td>{{ matSpec(p.parent_material_id) || '-' }}</td>
+                <td><a href="javascript:;" @click="removeParent(i)" style="color:#dc2626;">删除</a></td>
+              </tr>
+              <tr v-if="!parentMaterials.length"><td colspan="4" style="text-align:center;color:#909399;">尚未添加主件</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:10px;">
+        <button @click="nav('page-bom')">返回</button>
+        <button @click="submit" :disabled="submitting" style="background:#1e88e5;">{{ submitting ? '提交中...' : '提交变更' }}</button>
       </div>
     </div>
   `

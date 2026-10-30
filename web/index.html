@@ -483,6 +483,37 @@
     .yield-page .yield-mat-opt-name { font-size: 12.5px; color: #667085; margin-top: 2px; }
     .yield-page .yield-mat-opt-spec { color: #98a2b3; }
 
+    /* === 多主件 ECN 可搜索下拉 === */
+    .bom-ecn .ecn-mat-select { position: relative; min-width: 260px; flex: 1; max-width: 400px; }
+    .bom-ecn .ecn-mat-input-row { position: relative; display: flex; align-items: center; }
+    .bom-ecn .ecn-mat-input {
+      width: 100%; padding: 7px 28px 7px 12px; border: 1px solid #d0d5dd;
+      border-radius: 6px; font-size: 14px; color: #344054; background: #fff; outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .bom-ecn .ecn-mat-input:focus { border-color: #1e88e5; box-shadow: 0 0 0 3px rgba(30, 136, 229, .12); }
+    .bom-ecn .ecn-mat-clear {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      width: 18px; height: 18px; border-radius: 50%; text-align: center; line-height: 16px;
+      font-size: 13px; color: #98a2b3; cursor: pointer; user-select: none;
+    }
+    .bom-ecn .ecn-mat-clear:hover { background: #f2f4f7; color: #344054; }
+    .bom-ecn .ecn-mat-dropdown {
+      position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+      background: #fff; border: 1px solid #d0d5dd; border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(16,24,40,.08);
+      max-height: 320px; overflow-y: auto; z-index: 999;
+    }
+    .bom-ecn .ecn-mat-empty { padding: 20px; text-align: center; color: #98a2b3; font-size: 13px; }
+    .bom-ecn .ecn-mat-option { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #f2f4f7; }
+    .bom-ecn .ecn-mat-option:last-child { border-bottom: none; }
+    .bom-ecn .ecn-mat-option:hover,
+    .bom-ecn .ecn-mat-option.sel { background: #f0f7ff; }
+    .bom-ecn .ecn-mat-option.sel .ecn-mat-opt-id { color: #1565c0; }
+    .bom-ecn .ecn-mat-opt-id { font-family: monospace; font-size: 12.5px; color: #1d2939; font-weight: 600; }
+    .bom-ecn .ecn-mat-opt-name { font-size: 12.5px; color: #667085; margin-top: 2px; }
+    .bom-ecn .ecn-mat-opt-spec { color: #98a2b3; }
+
     @media (max-width: 980px) {
       .yield-page .yield-header { grid-template-columns: repeat(3, 1fr); }
       .yield-page .yield-chart-bar { grid-template-columns: 100px 1fr 60px 60px; }
@@ -606,7 +637,7 @@
     </template>
   </div>
 
-  <script src="js/components.js?v=20261024n"></script>
-  <script src="js/app.js?v=20261024n"></script>
+  <script src="js/components.js?v=20261024r"></script>
+  <script src="js/app.js?v=20261024r"></script>
 </body>
 </html>

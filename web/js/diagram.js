@@ -15,7 +15,7 @@
     report:   { label: '报表管理',   color: '#0891b2' }
   };
 
-  /* ---------------- 62 个业务接口（module.exports 顺序） ---------------- */
+  /* ---------------- 63 个业务接口（module.exports 顺序） ---------------- */
   var IFACES = [
   {
     "no": 1,
@@ -819,10 +819,23 @@
       "动态拼 SET，强制写 update_by/update_time",
       "UPDATE custom_report 提交"
     ]
+  },
+  {
+    "no": 63,
+    "name": "applyMultiBomEcn",
+    "line": "L2715",
+    "desc": "多主件 ECN：多主件统一失效/新增元件，循环调用 BOM 变更服务",
+    "steps": [
+      "校验变更内容：change_type=disable/add、元件非空、用量正数",
+      "同一元件不得既失效又新增；元件/主件料号必须存在",
+      "非法输入控制：失效元件必须存在于各主件 BOM，新增元件不得已存在",
+      "收集全部错误一次性返回",
+      "逐主件循环调用 updateBomDetail，自动归档历史版本"
+    ]
   }
 ];
 
-  /* ---------------- 59 个消息分支 ---------------- */
+  /* ---------------- 60 个消息分支 ---------------- */
   var BRANCHES = [
   {
     "n": 1,
@@ -1601,10 +1614,23 @@
     "senders": [
       "page-custom-report"
     ]
+  },
+  {
+    "n": 60,
+    "action": "applyMultiBomEcn",
+    "input": "{ ecn_items[], parent_material_ids[] }",
+    "biz": "bom",
+    "composite": false,
+    "ifaces": [
+      "applyMultiBomEcn"
+    ],
+    "senders": [
+      "page-bom-ecn"
+    ]
   }
 ];
 
-  /* ---------------- 30 个前端组件（含 app.js 根实例） ---------------- */
+  /* ---------------- 31 个前端组件（含 app.js 根实例） ---------------- */
   var COMPONENTS = [
   {
     "name": "app（根实例）",
@@ -2087,6 +2113,25 @@
       ]
     ],
     "note": "自定义报表数据展示（动态列名 + 数据行 + 导出 Excel）"
+  },
+  {
+    "name": "page-bom-ecn",
+    "line": 4245,
+    "sends": [
+      [
+        "queryMaterials",
+        "L4286"
+      ],
+      [
+        "queryBomParentList",
+        "L4388"
+      ],
+      [
+        "applyMultiBomEcn",
+        "L4411"
+      ]
+    ],
+    "note": "多主件 ECN（左侧变更内容 + 右侧变更范围，批量失效/新增元件）"
   }
 ];
 
@@ -2236,8 +2281,8 @@
     });
     host.appendChild(b1.el); host.appendChild(b2.el);
 
-    /* 层3 server.js 62 接口 */
-    var b3 = band('业务层', 'server.js · 62 个导出接口', '#0d9488', '62 个接口 + 8 个内部辅助函数');
+    /* 层3 server.js 63 接口 */
+    var b3 = band('业务层', 'server.js · 63 个导出接口', '#0d9488', '63 个接口 + 8 个内部辅助函数');
     IFACES.forEach(function (i) {
       var chip = el('span', 'chip', i.name);
       chip.title = '接口 ' + i.no + '（' + i.line + '）：' + i.desc;

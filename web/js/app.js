@@ -68,6 +68,7 @@ const PAGE_LABELS = {
   'page-bom': 'BOM数据',
   'page-bom-add': '新增BOM',
   'page-bom-detail': 'BOM明细',
+  'page-bom-ecn': '多主件ECN',
   'page-barcode-print': '条码打印',
   'page-barcode-archive': '条码档案',
   'page-barcode-format': '条码格式',

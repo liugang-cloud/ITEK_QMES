@@ -25,7 +25,7 @@ window.renderArchFlat = function () {
     { label: '检验记录', items: ['page-records', 'page-record-detail'] },
     { label: '扫码装配', items: ['page-assemble', 'page-assemble-records', 'page-assemble-detail', 'page-assemble-analysis'] },
     { label: '基础资料', items: ['page-inspect-item', 'page-item-add', 'page-material', 'page-material-add', 'page-rule', 'page-rule-add', 'page-rule-detail'] },
-    { label: 'BOM', items: ['page-bom', 'page-bom-detail', 'page-bom-add'] },
+    { label: 'BOM', items: ['page-bom', 'page-bom-detail', 'page-bom-add', 'page-bom-ecn'] },
     { label: '条码管理', items: ['page-barcode-format', 'page-barcode-print', 'page-barcode-archive'] },
     { label: '系统/分析', items: ['page-arch', 'page-api-log', 'page-yield-analysis'] }
   ];
@@ -35,7 +35,7 @@ window.renderArchFlat = function () {
     { label: '检验记录', items: ['queryInspectionList', 'getInspectionDetail', 'updateInspectionDetail', 'deleteInspectionRecords', 'queryInspectionHistory', 'getInspectionHistoryVersion', 'queryYieldAnalysis'] },
     { label: '项目/规则', items: ['queryInspectItems', 'queryInspectRules', 'getInspectRuleDetail', 'updateInspectRule', 'createInspectItem', 'updateInspectItem', 'createInspectRule', 'getRuleCodes'] },
     { label: '物料', items: ['queryMaterials', 'createMaterial', 'updateMaterial'] },
-    { label: 'BOM', items: ['queryBomParentList', 'getBomDetail', 'updateBomDetail', 'queryBomHistory', 'getBomHistoryVersion', 'queryBomVersions', 'createBom'] },
+    { label: 'BOM', items: ['queryBomParentList', 'getBomDetail', 'updateBomDetail', 'queryBomHistory', 'getBomHistoryVersion', 'queryBomVersions', 'createBom', 'applyMultiBomEcn'] },
     { label: '扫码装配', items: ['checkAssemble', 'checkMainMaterial', 'checkComponentSn', 'checkComponentBom', 'checkComponentInspection', 'createAssemble', 'queryAssembleList', 'getAssembleDetail', 'updateAssembleDetail', 'deleteAssembleRecords', 'queryAssembleHistory', 'getAssembleHistoryVersion', 'searchMainSn', 'getAssembleAnalysis'] },
     { label: 'Excel 导入', items: ['importInspectItems', 'importInspectRules', 'importMaterials', 'importBom'] },
     { label: '条码管理', items: ['getBarcodeRule', 'updateBarcodeRule', 'recordSnSerial', 'querySnArchive', 'getSerialMap'] },

@@ -2703,6 +2703,118 @@ async function updateCustomReport(data) {
   return { success: true, data: { id } };
 }
 
+// 接口：多主件 ECN（工程变更通知）
+// 入参 data: {
+//   ecn_items: [{ component_material, change_type: 'disable'|'add', quantity }],
+//   parent_material_ids: ['M001', ...],
+//   update_by
+// }
+// 逻辑：对每个主件，按 ECN 内容（失效/新增元件）调整其 BOM，循环调用 BOM 变更服务（updateBomDetail）实现，
+//       并自动写入历史版本。
+// 非法输入控制：失效元件必须存在于目标主件 BOM 中，否则报错；新增元件不可已存在于目标主件 BOM 中。
+async function applyMultiBomEcn(data) {
+  const { parent_material_ids = [], ecn_items = [], update_by } = data || {};
+
+  // 1. 基础校验
+  if (!Array.isArray(parent_material_ids) || parent_material_ids.length === 0) {
+    return { success: false, message: '请选择至少一个主件' };
+  }
+  if (!Array.isArray(ecn_items) || ecn_items.length === 0) {
+    return { success: false, message: '请至少添加一条变更内容' };
+  }
+
+  // 2. 归类变更内容并校验
+  const disableSet = new Set();
+  const addList = [];
+  for (const it of ecn_items) {
+    const comp = String(it.component_material || '').trim();
+    if (!comp) return { success: false, message: '变更内容存在未填写元件的行' };
+    if (it.change_type === 'disable') {
+      disableSet.add(comp);
+    } else if (it.change_type === 'add') {
+      addList.push({ component_material: comp, quantity: Number(it.quantity) || 1 });
+    } else {
+      return { success: false, message: `无效的变更方式: ${it.change_type}` };
+    }
+  }
+
+  // 同一元件不能既是失效又是新增
+  for (const comp of disableSet) {
+    if (addList.some(a => a.component_material === comp)) {
+      return { success: false, message: `元件 ${comp} 不能同时设置为失效和新增` };
+    }
+  }
+  // 新增元件去重 + 用量校验
+  const seen = new Set();
+  const addUnique = [];
+  for (const a of addList) {
+    if (seen.has(a.component_material)) continue;
+    seen.add(a.component_material);
+    if (!(a.quantity > 0)) return { success: false, message: `新增元件用量必须为正数: ${a.component_material}` };
+    addUnique.push(a);
+  }
+
+  // 3. 校验所有涉及的元件料号存在
+  const allComp = [...disableSet, ...addUnique.map(a => a.component_material)];
+  for (const comp of allComp) {
+    const m = await db.findOne('material', { material_id: comp });
+    if (!m) return { success: false, message: `元件料号不存在: ${comp}` };
+  }
+
+  // 4. 逐一校验主件与其当前 BOM 的合法性（收集全部错误，一次报出）
+  const errors = [];
+  const pids = [];
+  for (const pid of parent_material_ids) {
+    const pm = String(pid || '').trim();
+    if (!pm) { errors.push('存在空的主件料号'); continue; }
+    const parent = await db.findOne('material', { material_id: pm });
+    if (!parent) { errors.push(`主件料号不存在: ${pm}`); continue; }
+    pids.push(pm);
+
+    const [curRows] = await db.pool.query(
+      'SELECT component_material FROM bom WHERE parent_material_id = ?', [pm]
+    );
+    const has = new Set(curRows.map(r => r.component_material));
+    for (const comp of disableSet) {
+      if (!has.has(comp)) errors.push(`主件 ${pm} 不含待失效元件: ${comp}`);
+    }
+    for (const a of addUnique) {
+      if (has.has(a.component_material)) errors.push(`主件 ${pm} 已含待新增元件: ${a.component_material}`);
+    }
+  }
+  if (errors.length) {
+    return { success: false, message: errors.join('；'), data: { errors } };
+  }
+
+  // 5. 循环调用 BOM 变更服务（自动归档历史版本）
+  const results = [];
+  for (const pm of pids) {
+    const [curRows] = await db.pool.query(
+      'SELECT component_material, quantity FROM bom WHERE parent_material_id = ?', [pm]
+    );
+    const finalItems = curRows
+      .filter(r => !disableSet.has(r.component_material))
+      .map(r => ({ component_material: r.component_material, quantity: r.quantity }));
+    for (const a of addUnique) {
+      finalItems.push({ component_material: a.component_material, quantity: a.quantity });
+    }
+    const r = await updateBomDetail({ parent_material_id: pm, items: finalItems, update_by });
+    results.push({
+      parent_material_id: pm,
+      success: !!r.success,
+      message: r.message || '',
+      version: (r.data && r.data.version) || null
+    });
+  }
+
+  const allOk = results.every(r => r.success);
+  return {
+    success: allOk,
+    message: allOk ? undefined : '部分主件变更失败，请查看明细',
+    data: { results, count: results.length }
+  };
+}
+
 module.exports = {
   login,
   getSession,
@@ -2765,5 +2877,6 @@ module.exports = {
   createCustomReport,
   getCustomReportData,
   deleteCustomReports,
-  updateCustomReport
+  updateCustomReport,
+  applyMultiBomEcn
 };
