@@ -57,10 +57,12 @@ const PAGE_LABELS = {
   'page-record-detail': '检验单明细',
   'page-assemble': '扫码装配',
   'page-assemble-records': '装配记录查询',
+  'page-arrival-order': '到货单',
   'page-assemble-detail': '装配单明细',
   'page-inspect-item': '检验项目',
   'page-item-add': '新增检验项目',
   'page-material': '物料数据',
+  'page-supplier': '供应商管理',
   'page-material-add': '新增物料',
   'page-rule': '检验规则',
   'page-rule-add': '新增检验规则',
@@ -75,9 +77,17 @@ const PAGE_LABELS = {
   'page-api-log': '日志管理',
   'page-arch': '系统架构',
   'page-yield-analysis': '良率分析',
+  'page-yield-report': '良率报表',
+  'page-yield-detail-report': '良率明细报表',
+  'page-stock-movement-report': '库存异动报表',
+  'page-inspection-execution-report': '检验执行报表',
+  'page-supplier-yield-report': '供应商良率报表',
+  'page-yield-detail': '检验项目明细',
   'page-assemble-analysis': '装配分析',
   'page-custom-report': '自定义报表',
-  'page-custom-report-viewer': '报表数据'
+  'page-custom-report-viewer': '报表数据',
+  'page-user-mgmt': '用户管理',
+  'page-permission-mgmt': '权限管理'
 };
 
 // 列表页 → 该页签内可直接跳转的明细页（不新开页签）
@@ -88,6 +98,7 @@ const INLINE = {
   'page-material': 'page-material-add',
   'page-rule': 'page-rule-detail',
   'page-bom': 'page-bom-detail',
+  'page-yield-analysis': 'page-yield-detail',
 };
 
 // ========== 主应用 ==========
@@ -104,6 +115,8 @@ new Vue({
     loginLoading: false,
     tabs: [],        // 已打开页签 [{ key, origin, page, label, params }]
     activeTab: null, // 当前激活页签 key
+    listPageNames: Object.keys(INLINE), // 需要缓存（保留筛选条件）的列表页组件名
+    permissions: { is_admin: false, menu_perms: [], func_perms: [] }, // 当前用户权限
     menu: [
       {
         title: '基础设置',
@@ -111,12 +124,14 @@ new Vue({
           { key: 'page-inspect-item', label: '检验项目' },
           { key: 'page-material', label: '物料数据' },
           { key: 'page-rule', label: '检验规则' },
-          { key: 'page-bom', label: 'BOM数据' }
+          { key: 'page-bom', label: 'BOM数据' },
+          { key: 'page-supplier', label: '供应商管理' }
         ]
       },
       {
         title: '检验管理',
         items: [
+          { key: 'page-arrival-order', label: '到货单' },
           { key: 'page-scan', label: '扫码检验' },
           { key: 'page-records', label: '检验记录查询' },
           { key: 'page-assemble', label: '扫码装配' },
@@ -134,7 +149,10 @@ new Vue({
       {
         title: '报表管理',
         items: [
-          { key: 'page-yield-analysis', label: '良率分析' },
+          { key: 'page-yield-detail-report', label: '良率明细报表' },
+          { key: 'page-stock-movement-report', label: '库存异动报表' },
+          { key: 'page-inspection-execution-report', label: '检验执行报表' },
+          { key: 'page-supplier-yield-report', label: '供应商良率报表' },
           { key: 'page-assemble-analysis', label: '装配分析' },
           { key: 'page-custom-report', label: '自定义报表' }
         ]
@@ -142,6 +160,8 @@ new Vue({
       {
         title: '系统管理',
         items: [
+          { key: 'page-user-mgmt', label: '用户管理' },
+          { key: 'page-permission-mgmt', label: '权限管理' },
           { key: 'page-api-log', label: '日志管理' },
           { key: 'page-arch', label: '系统架构' }
         ]
@@ -151,12 +171,23 @@ new Vue({
   computed: {
     activeTabObj() {
       return this.tabs.find(t => t.key === this.activeTab);
+    },
+    // 根据权限过滤后的菜单
+    filteredMenu() {
+      const hasMenuKey = (key) => {
+        if (this.permissions.is_admin) return true;
+        return this.permissions.menu_perms.includes(key);
+      };
+      return this.menu.map(group => ({
+        title: group.title,
+        items: group.items.filter(it => hasMenuKey(it.key))
+      })).filter(group => group.items.length > 0);
     }
   },
   created() {
     this._tabSeq = 0;
     this.token = localStorage.getItem('qmes_token') || '';
-    this.ws = new WsClient('ws://192.168.40.118:8080');
+    this.ws = new WsClient('ws://192.168.40.127:8080');
     this.ws.token = this.token;
     this.ws.onStatus = (on) => { this.wsConnected = on; };
     // 重连成功后自动用已保存的 token 恢复登录状态
@@ -183,6 +214,8 @@ new Vue({
         this.currentUser = { username: res.data.username, realname: res.data.realname };
         this.loginForm.password = '';
         this.loggedIn = true;
+        // 登录成功后拉取权限
+        this.loadPermissions(res.data.username);
       } catch (e) {
         this.loginError = '登录失败，请检查服务是否正常';
       } finally {
@@ -195,6 +228,7 @@ new Vue({
       this.clearToken();
       this.loggedIn = false;
       this.currentUser = {};
+      this.permissions = { is_admin: false, menu_perms: [], func_perms: [] };
       this.tabs = [];
       this.activeTab = null;
       this.loginForm = { username: '', password: '' };
@@ -207,10 +241,32 @@ new Vue({
       if (res.success) {
         this.currentUser = res.data;
         this.loggedIn = true;
+        // 恢复会话后也拉取权限
+        this.loadPermissions(res.data.username);
       } else {
         this.clearToken();
         this.loggedIn = false;
       }
+    },
+    // 拉取当前用户权限
+    async loadPermissions(username) {
+      if (!username) return;
+      const res = await this.ws.send('getUserPermissions', { username });
+      if (res.success) {
+        this.permissions = res.data;
+        localStorage.setItem('qmes_perms', JSON.stringify(res.data));
+      }
+    },
+    // 权限检查方法（供子组件通过 $root 调用）
+    hasMenuPerm(key) {
+      if (!this.permissions) return false;
+      if (this.permissions.is_admin) return true;
+      return this.permissions.menu_perms.includes(key);
+    },
+    hasFuncPerm(code) {
+      if (!this.permissions) return false;
+      if (this.permissions.is_admin) return true;
+      return this.permissions.func_perms.includes(code);
     },
     // 登录失效处理
     handleUnauthorized() {
@@ -226,9 +282,16 @@ new Vue({
       this.token = '';
       this.ws.token = '';
       localStorage.removeItem('qmes_token');
+      localStorage.removeItem('qmes_perms');
+      this.permissions = { is_admin: false, menu_perms: [], func_perms: [] };
     },
     // 侧边栏点击：打开/切换功能页（单实例，已打开则切换）
     openMenu(item) {
+      // 菜单权限校验
+      if (!this.hasMenuPerm(item.key)) {
+        alert(`您没有权限访问「${item.label}」`);
+        return;
+      }
       this.openTab(item.key);
     },
     // 打开功能页

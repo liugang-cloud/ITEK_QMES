@@ -44,6 +44,8 @@
     }
 
     .main { flex: 1; padding: 16px 28px 24px; overflow-y: auto; }
+    /* 页签容器：保留所有已打开页签的实例，仅切换显示 */
+    .tab-pane { width: 100%; }
 
     /* 页签栏 */
     .tabbar { display: flex; align-items: flex-end; gap: 4px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -604,7 +606,7 @@
     <div class="body">
       <!-- 侧边导航 -->
       <div class="sidebar">
-        <div v-for="group in menu" :key="group.title">
+        <div v-for="group in filteredMenu" :key="group.title">
           <div class="group-title">{{ group.title }}</div>
           <div
             v-for="item in group.items"
@@ -629,15 +631,22 @@
           </div>
         </div>
 
-        <component v-if="activeTabObj" :is="activeTabObj.page" :key="activeTab" :ws="ws" :nav="go" :params="activeTabObj.params" :origin="activeTabObj.origin"></component>
+        <!-- 所有已打开的页签都保留实例，仅切换显示；关闭页签才销毁 -->
+        <template v-for="t in tabs">
+          <div :key="t.key" v-show="activeTab === t.key" class="tab-pane">
+            <keep-alive :include="listPageNames">
+              <component :is="t.page" :key="t.key + '__' + t.page" :ws="ws" :nav="go" :params="t.params" :origin="t.origin"></component>
+            </keep-alive>
+          </div>
+        </template>
         <!-- 无打开页签时默认显示业务链路总览 -->
-        <page-guide v-else key="guide"></page-guide>
+        <page-guide v-if="!tabs.length" key="guide"></page-guide>
       </div>
     </div>
     </template>
   </div>
 
-  <script src="js/components.js?v=20261024r"></script>
-  <script src="js/app.js?v=20261024r"></script>
+  <script src="js/components.js?v=20261116e"></script>
+  <script src="js/app.js?v=20261116e"></script>
 </body>
 </html>

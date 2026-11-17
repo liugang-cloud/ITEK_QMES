@@ -200,7 +200,8 @@ async function calcInspectionComplete(conn, recordId) {
   const [rows] = await conn.execute(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN (measured_val IS NOT NULL AND TRIM(measured_val) != '')
-                       OR (measured_text IS NOT NULL AND TRIM(measured_text) != '') THEN 1 ELSE 0 END) AS filled
+                       OR (measured_text IS NOT NULL AND TRIM(measured_text) != '')
+                       OR (image_url IS NOT NULL AND TRIM(image_url) != '') THEN 1 ELSE 0 END) AS filled
      FROM inspection_record_detail WHERE record_id = ?`,
     [recordId]
   );
@@ -209,12 +210,14 @@ async function calcInspectionComplete(conn, recordId) {
   return total > 0 && filled === total ? 1 : 0;
 }
 
-// 明细是否已录入：测量值或说明任一非空
+// 明细是否已录入：测量值、说明或图片任一非空
 function hasMeasured(item) {
   const v = item.measured_val;
   if (v !== null && v !== undefined && String(v).trim() !== '') return true;
   const t = item.measured_text;
-  return t !== null && t !== undefined && String(t).trim() !== '';
+  if (t !== null && t !== undefined && String(t).trim() !== '') return true;
+  const g = item.image_url;
+  return g !== null && g !== undefined && String(g).trim() !== '';
 }
 
 // 接口4：生成检验单
@@ -225,13 +228,50 @@ function hasMeasured(item) {
 // }
 // 整单结论由明细判定，不采用入参 result
 // 事务写入 inspection_record + inspection_record_detail
-async function createInspection(data) {
-  const { material_id, batch_no, rule_code, inspect_date, inspector, create_by, remark, process_result = '接收', items = [] } = data;
+// 规范化附件：入参可以是字符串(单URL)、数组(JSON数组)，最终归一为字符串数组
+function normAttach(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.filter(Boolean).map(String);
+  if (typeof v === 'string') {
+    v = v.trim();
+    if (!v) return [];
+    // 如果是 JSON 数组字符串则 parse
+    if (v.startsWith('[') && v.endsWith(']')) {
+      try {
+        const arr = JSON.parse(v);
+        if (Array.isArray(arr)) return arr.filter(Boolean).map(String);
+      } catch (_) { /* fallthrough */ }
+    }
+    return v.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+}
 
-  // 未录入的项目写 NULL 判定（不参与整单结论），已录入的按入参 is_pass
+async function createInspection(data) {
+  const { material_id, batch_no, rule_code, inspect_date, inspector, create_by, remark, process_result = '接收', items = [], arrival_order_id, cmm_report_url } = data;
+
+  // 到货单绑定为非必填；若绑定则校验存在且物料一致
+  let arrivalId = null;
+  if (arrival_order_id !== undefined && arrival_order_id !== null && String(arrival_order_id).trim() !== '') {
+    const aid = Number(arrival_order_id);
+    if (!Number.isInteger(aid) || aid <= 0) {
+      return { success: false, message: '到货单不存在' };
+    }
+    const arrival = await db.findOne('arrival_order', { id: aid });
+    if (!arrival) {
+      return { success: false, message: `到货单不存在: ${aid}` };
+    }
+    if (String(arrival.material_id) !== String(material_id)) {
+      return { success: false, message: '所选到货单的物料与当前检验物料不一致' };
+    }
+    arrivalId = aid;
+  }
+
+  // 未录入的项目写 NULL 判定（不参与整单结论），已录入的按入参 is_pass（允许显式 NULL=未判定）
   const normalized = items.map(it => ({
     ...it,
-    is_pass: hasMeasured(it) ? (it.is_pass ?? 1) : null
+    is_pass: hasMeasured(it) ? (it.is_pass === undefined ? 1 : it.is_pass) : null,
+    attachments: normAttach(it.attachments)
   }));
   const finalResult = judgeResult(normalized);
 
@@ -240,15 +280,15 @@ async function createInspection(data) {
     await conn.beginTransaction();
 
     const [recordResult] = await conn.execute(
-      'INSERT INTO inspection_record (material_id, batch_no, rule_code, inspect_date, inspector, create_by, result, remark, process_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [material_id, batch_no, rule_code || null, inspect_date || new Date(), inspector, create_by || null, finalResult, remark || null, process_result || '接收']
+      'INSERT INTO inspection_record (material_id, batch_no, arrival_order_id, rule_code, inspect_date, inspector, create_by, result, remark, process_result, cmm_report_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [material_id, batch_no, arrivalId, rule_code || null, inspect_date || new Date(), inspector, create_by || null, finalResult, remark || null, process_result || '接收', cmm_report_url || null]
     );
     const recordId = recordResult.insertId;
 
     for (const item of normalized) {
       await conn.execute(
-        'INSERT INTO inspection_record_detail (record_id, item_id, item_name, measured_val, measured_text, is_pass, remark) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [recordId, item.item_id, item.item_name || null, item.measured_val ?? null, item.measured_text || null, item.is_pass, item.remark || null]
+        'INSERT INTO inspection_record_detail (record_id, item_id, item_name, measured_val, measured_text, image_url, is_pass, remark, entry_time, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [recordId, item.item_id, item.item_name || null, item.measured_val ?? null, item.measured_text || null, item.image_url || null, item.is_pass, item.remark || null, item.entry_time || null, item.attachments.length ? JSON.stringify(item.attachments) : null]
       );
     }
 
@@ -284,7 +324,8 @@ async function queryInspectionList(data) {
                     (SELECT COUNT(*) FROM inspection_record_detail d
                       WHERE d.record_id = r.id
                         AND ((d.measured_val IS NOT NULL AND TRIM(d.measured_val) != '')
-                          OR (d.measured_text IS NOT NULL AND TRIM(d.measured_text) != ''))) AS scanned_qty,
+                          OR (d.measured_text IS NOT NULL AND TRIM(d.measured_text) != '')
+                          OR (d.image_url IS NOT NULL AND TRIM(d.image_url) != ''))) AS scanned_qty,
                     (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id) AS required_qty,
                     (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id AND d.is_pass = 1) AS pass_count,
                     (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id AND d.is_pass IS NOT NULL) AS judged_total
@@ -338,14 +379,19 @@ async function getInspectionDetail(sn) {
     `SELECT r.id, r.material_id, m.material_name, m.material_spec,
             r.batch_no, r.rule_code, r.inspect_date, r.inspector, r.create_by,
             r.result, r.is_complete, r.remark, r.created_time, r.update_by, r.update_time,
-            r.process_result,
+            r.process_result, r.arrival_order_id, r.cmm_report_url,
+            ao.arrival_date AS arrival_order_date, s.supplier_name AS arrival_supplier_name,
+            ao.quantity AS arrival_quantity,
             (SELECT COUNT(*) FROM inspection_record_detail d
               WHERE d.record_id = r.id
                 AND ((d.measured_val IS NOT NULL AND TRIM(d.measured_val) != '')
-                  OR (d.measured_text IS NOT NULL AND TRIM(d.measured_text) != ''))) AS scanned_qty,
+                  OR (d.measured_text IS NOT NULL AND TRIM(d.measured_text) != '')
+                  OR (d.image_url IS NOT NULL AND TRIM(d.image_url) != ''))) AS scanned_qty,
             (SELECT COUNT(*) FROM inspection_record_detail d WHERE d.record_id = r.id) AS required_qty
      FROM inspection_record r
      LEFT JOIN material m ON m.material_id = r.material_id
+     LEFT JOIN arrival_order ao ON ao.id = r.arrival_order_id
+     LEFT JOIN supplier s ON s.id = ao.supplier_id
      WHERE r.batch_no = ?`,
     [sn]
   );
@@ -353,8 +399,8 @@ async function getInspectionDetail(sn) {
     return { success: false, message: `检验单不存在: ${sn}` };
   }
   const details = await db.query(
-    `SELECT d.id, d.item_id, d.item_name, d.measured_val, d.measured_text, d.is_pass, d.remark,
-            ri.standard_value, ri.standard_range, ii.item_type
+    `SELECT d.id, d.item_id, d.item_name, d.measured_val, d.measured_text, d.image_url, d.is_pass, d.remark, d.entry_time, d.attachments,
+            ri.standard_value, ri.standard_range, ri.image_url AS standard_image_url, ii.item_type
      FROM inspection_record_detail d
      LEFT JOIN inspection_record r ON r.id = d.record_id
      LEFT JOIN inspection_rule_item ri ON ri.item_id = d.item_id AND FIND_IN_SET(ri.rule_code, r.rule_code)
@@ -363,50 +409,81 @@ async function getInspectionDetail(sn) {
      ORDER BY d.id`,
     [records[0].id]
   );
+  details.forEach(d => { d.attachments = normAttach(d.attachments); });
   return { success: true, data: { record: records[0], details } };
 }
 
-// 接口29：修改检验单明细（单身数据）
-// 入参: { batch_no, update_by, items: [{ id, measured_val, measured_text, is_pass, remark }] }
+// 接口29：修改检验单明细（单身数据，含每个明细的附件）
+// 入参: { batch_no, update_by, items: [{ id, measured_val, measured_text, is_pass, remark, attachments? }] }
 // 按明细 id 更新对应单身；同时重算单头结论（全部单项合格=1，否则=0），并记录更新人员/更新时间
 async function updateInspectionDetail(data) {
-  const { batch_no, update_by, process_result, items = [] } = data;
+  const { batch_no, update_by, process_result, arrival_order_id, items = [] } = data;
   if (!batch_no) {
     return { success: false, message: '缺少检验单号' };
   }
-  const [records] = await db.pool.query('SELECT id FROM inspection_record WHERE batch_no = ?', [batch_no]);
+  const [records] = await db.pool.query('SELECT id, material_id, arrival_order_id FROM inspection_record WHERE batch_no = ?', [batch_no]);
   if (records.length === 0) {
     return { success: false, message: `检验单不存在: ${batch_no}` };
   }
   const recordId = records[0].id;
 
+  // 到货单绑定修改（非必填）：空值表示解绑；传入时校验存在且物料一致
+  // arrivalId === undefined 表示本次不修改绑定
+  let arrivalId;
+  if (arrival_order_id !== undefined) {
+    const raw = arrival_order_id === null ? '' : String(arrival_order_id).trim();
+    if (raw === '' || raw === 'null') {
+      arrivalId = null;
+    } else {
+      const aid = Number(raw);
+      if (!Number.isInteger(aid) || aid <= 0) {
+        return { success: false, message: '到货单不存在' };
+      }
+      const arrival = await db.findOne('arrival_order', { id: aid });
+      if (!arrival) {
+        return { success: false, message: `到货单不存在: ${aid}` };
+      }
+      if (String(arrival.material_id) !== String(records[0].material_id)) {
+        return { success: false, message: '所选到货单的物料与当前检验物料不一致' };
+      }
+      arrivalId = aid;
+    }
+  }
+
   // 预先读取当前明细（短路比对 + 历史归档共用，避免二次查询）
   // 注意：查询在事务外进行，极端并发下历史归档可能用了略旧的快照，QMS 场景概率极低
   const [oldDetails] = await db.pool.query(
-    `SELECT id, item_id, item_name, measured_val, measured_text, is_pass, remark, created_time
+    `SELECT id, item_id, item_name, measured_val, measured_text, image_url, is_pass, remark, created_time, entry_time, attachments
      FROM inspection_record_detail WHERE record_id = ? ORDER BY id`, [recordId]
   );
 
   // === 短路优化：新旧明细 + process_result 完全一致则跳过修改 ===
   {
     const [headRows] = await db.pool.query(
-      'SELECT process_result FROM inspection_record WHERE id = ?', [recordId]
+      'SELECT process_result, arrival_order_id FROM inspection_record WHERE id = ?', [recordId]
     );
     const currentProcessResult = headRows[0].process_result;
+    const currentArrival = headRows[0].arrival_order_id === null || headRows[0].arrival_order_id === undefined
+      ? null : Number(headRows[0].arrival_order_id);
 
     // 复刻 UPDATE 时的字段规范化口径（全部转 String，避免 number/string/null 类型错配）
     const normVal = (v) => (v === undefined || v === null || v === '' ? '' : String(v).trim());
     const normText = (t) => (t === undefined || t === null ? '' : String(t).trim());
     const normRemark = (r) => (r === undefined || r === null ? '' : String(r).trim());
     const normPass = (item) => {
-      // hasMeasured 口径：measured_val 或 measured_text 任一非空即视为已录入
       const v = item.measured_val;
       const hasV = v !== null && v !== undefined && String(v).trim() !== '';
       const t = item.measured_text;
       const hasT = t !== null && t !== undefined && String(t).trim() !== '';
-      const measured = hasV || hasT;
-      const p = measured ? (item.is_pass === null || item.is_pass === undefined ? 1 : item.is_pass) : null;
+      const g = item.image_url;
+      const hasG = g !== null && g !== undefined && String(g).trim() !== '';
+      const measured = hasV || hasT || hasG;
+      const p = measured ? (item.is_pass === undefined ? 1 : item.is_pass) : null;
       return p === null || p === undefined ? '' : String(p);
+    };
+    const attsEq = (a, b) => {
+      const aa = normAttach(a), bb = normAttach(b);
+      return aa.length === bb.length && aa.every((x, i) => x === bb[i]);
     };
 
     const oldMap = new Map(oldDetails.map(d => [d.id, d]));
@@ -415,23 +492,26 @@ async function updateInspectionDetail(data) {
       if (!it.id) continue;
       const old = oldMap.get(it.id);
       if (!old) { changed = true; break; }
-      // 旧值也统一转 String，和规范化后的新值同口径
       const oldVal = normVal(old.measured_val);
       const oldText = normText(old.measured_text);
+      const oldImg = normVal(old.image_url);
       const oldPass = old.is_pass === null || old.is_pass === undefined ? '' : String(old.is_pass);
       const oldRemark = normRemark(old.remark);
       const newVal = normVal(it.measured_val);
       const newText = normText(it.measured_text);
+      const newImg = normVal(it.image_url);
       const newPass = normPass(it);
       const newRemark = normRemark(it.remark);
-      if (oldVal !== newVal || oldText !== newText || oldPass !== newPass || oldRemark !== newRemark) {
+      const newAtts = it.attachments !== undefined ? it.attachments : normAttach(old.attachments);
+      if (oldVal !== newVal || oldText !== newText || oldImg !== newImg || oldPass !== newPass || oldRemark !== newRemark || !attsEq(old.attachments, newAtts)) {
         changed = true; break;
       }
     }
     const processSame = process_result === undefined || process_result === null ||
                         process_result === currentProcessResult;
+    const arrivalSame = arrivalId === undefined || arrivalId === currentArrival;
 
-    if (!changed && processSame) {
+    if (!changed && processSame && arrivalSame) {
       return { success: true, data: { record_id: recordId, no_change: true } };
     }
   }
@@ -450,13 +530,13 @@ async function updateInspectionDetail(data) {
     for (const d of beforeDetails) {
       await conn.execute(
         `INSERT INTO inspection_record_history
-           (record_id, version_no, detail_id, item_id, item_name, measured_val, measured_text, is_pass, origin_created_time, remark, change_by, change_time)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+           (record_id, version_no, detail_id, item_id, item_name, measured_val, measured_text, image_url, is_pass, origin_created_time, entry_time, remark, change_by, change_time, attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
         [recordId, nextVersion, d.id, d.item_id, d.item_name, d.measured_val, d.measured_text,
-         d.is_pass, d.created_time, d.remark, update_by || null]
+         d.image_url || null, d.is_pass, d.created_time, d.entry_time, d.remark, update_by || null,
+         d.attachments || null]
       );
     }
-    // 修改前无明细也写一条版本标记，保证版本链完整
     if (beforeDetails.length === 0) {
       await conn.execute(
         `INSERT INTO inspection_record_history (record_id, version_no, detail_id, change_by, change_time)
@@ -467,22 +547,26 @@ async function updateInspectionDetail(data) {
 
     for (const it of items) {
       if (!it.id) continue;
-      // 未录入的项目 is_pass 存 NULL（未判定）
-      const pass = hasMeasured(it) ? (it.is_pass === null || it.is_pass === undefined ? 1 : it.is_pass) : null;
+      // 未录入的项目 is_pass 存 NULL（未判定）；已录入时允许显式 NULL（用户主动选未判定）
+      const pass = hasMeasured(it) ? (it.is_pass === undefined ? 1 : it.is_pass) : null;
+      const atts = normAttach(it.attachments);
       await conn.execute(
-        'UPDATE inspection_record_detail SET measured_val=?, measured_text=?, is_pass=?, remark=? WHERE id=? AND record_id=?',
+        'UPDATE inspection_record_detail SET measured_val=?, measured_text=?, image_url=?, is_pass=?, remark=?, entry_time=?, attachments=? WHERE id=? AND record_id=?',
         [
           it.measured_val === undefined || it.measured_val === '' ? null : it.measured_val,
           it.measured_text || null,
+          it.image_url || null,
           pass,
           it.remark || null,
+          it.entry_time || null,
+          atts.length ? JSON.stringify(atts) : null,
           it.id,
           recordId
         ]
       );
     }
 
-    // 重算单头结论：与 judgeResult 同一口径——未录入(IS NULL)不参与，存在不合格即不合格
+    // 重算单头结论
     const [rows] = await conn.execute(
       `SELECT COUNT(*) AS total, COALESCE(SUM(is_pass = 0), 0) AS fail
        FROM inspection_record_detail WHERE record_id = ?`,
@@ -491,11 +575,14 @@ async function updateInspectionDetail(data) {
     const result = rows[0].total > 0 && Number(rows[0].fail) === 0 ? 1 : 0;
     const isComplete = await calcInspectionComplete(conn, recordId);
 
+    const headSets = ['result=?', 'is_complete=?', 'update_by=?', 'update_time=NOW()'];
+    const headParams = [result, isComplete, update_by || null];
+    if (process_result !== undefined && process_result !== null) { headSets.push('process_result=?'); headParams.push(process_result); }
+    if (arrivalId !== undefined) { headSets.push('arrival_order_id=?'); headParams.push(arrivalId); }
+    headParams.push(recordId);
     await conn.execute(
-      'UPDATE inspection_record SET result=?, is_complete=?, update_by=?, update_time=NOW()' +
-      (process_result !== undefined && process_result !== null ? ', process_result=?' : '') +
-      ' WHERE id=?',
-      [result, isComplete, update_by || null, ...(process_result !== undefined && process_result !== null ? [process_result] : []), recordId]
+      `UPDATE inspection_record SET ${headSets.join(', ')} WHERE id=?`,
+      headParams
     );
 
     await conn.commit();
@@ -529,7 +616,7 @@ function buildConditions(filterDefs, data) {
 
 async function pagedQuery({ baseSql, countSql, where, params, orderBy, data, groupBy }) {
   const page = Math.max(1, Number(data.page) || 1);
-  const pageSize = Math.min(200, Math.max(1, Number(data.page_size) || 20));
+  const pageSize = Math.min(5000, Math.max(1, Number(data.page_size) || 20));
   const gb = groupBy ? ` GROUP BY ${groupBy}` : '';
   const [rows] = await db.pool.query(
     `${baseSql}${where}${gb} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
@@ -615,7 +702,7 @@ async function getInspectRuleDetail(data = {}) {
   const header = await db.findOne('inspection_rule', key);
   if (!header) return { success: false, message: '检验规则不存在' };
   const items = await db.query(
-    `SELECT ri.id, ri.item_id, ri.item_name, ri.standard_value, ri.standard_range, ri.seq,
+    `SELECT ri.id, ri.item_id, ri.item_name, ri.standard_value, ri.standard_range, ri.image_url, ri.seq,
             ri.create_by, ri.created_time, ri.update_by, ri.update_time,
             ii.item_type
      FROM inspection_rule_item ri
@@ -669,14 +756,14 @@ async function updateInspectRule(data) {
       if (it.id && existIds.has(Number(it.id))) {
         keepIds.add(Number(it.id));
         await conn.execute(
-          `UPDATE inspection_rule_item SET item_id=?, item_name=?, standard_value=?, standard_range=?, seq=?, update_by=?, update_time=NOW() WHERE id=?`,
-          [it.item_id, it.item_name || null, it.standard_value || null, it.standard_range || null, seq, update_by || null, it.id]
+          `UPDATE inspection_rule_item SET item_id=?, item_name=?, standard_value=?, standard_range=?, image_url=?, seq=?, update_by=?, update_time=NOW() WHERE id=?`,
+          [it.item_id, it.item_name || null, it.standard_value || null, it.standard_range || null, it.image_url || null, seq, update_by || null, it.id]
         );
       } else {
         await conn.execute(
-          `INSERT INTO inspection_rule_item (rule_id, rule_code, item_id, item_name, standard_value, standard_range, seq, create_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [id, header.rule_code, it.item_id, it.item_name || null, it.standard_value || null, it.standard_range || null, seq, update_by || null]
+          `INSERT INTO inspection_rule_item (rule_id, rule_code, item_id, item_name, standard_value, standard_range, image_url, seq, create_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, header.rule_code, it.item_id, it.item_name || null, it.standard_value || null, it.standard_range || null, it.image_url || null, seq, update_by || null]
         );
       }
     }
@@ -1083,8 +1170,8 @@ async function createAssemble(data) {
     for (const c of components) {
       const sn = (c.component_sn || '').trim();
       await conn.execute(
-        'INSERT INTO assemble_record_detail (record_id, component_sn, component_material_id) VALUES (?, ?, ?)',
-        [recordId, sn || null, c.component_material_id]
+        'INSERT INTO assemble_record_detail (record_id, component_sn, component_material_id, scan_time) VALUES (?, ?, ?, ?)',
+        [recordId, sn || null, c.component_material_id, c.scan_time || null]
       );
     }
 
@@ -1220,7 +1307,7 @@ async function getAssembleDetail(mainSn) {
     return { success: false, message: `装配单不存在: ${mainSn}` };
   }
   const details = await db.query(
-    'SELECT id, component_sn, component_material_id, created_time FROM assemble_record_detail WHERE record_id = ? ORDER BY id',
+    'SELECT id, component_sn, component_material_id, created_time, scan_time FROM assemble_record_detail WHERE record_id = ? ORDER BY id',
     [records[0].id]
   );
   // 主件的 BOM 元件清单
@@ -1324,7 +1411,7 @@ async function updateAssembleDetail(data) {
   // 预先读取当前明细（短路比对 + 历史归档共用，避免二次查询）
   // 注意：查询在事务外进行，极端并发下历史归档可能用了略旧的快照，QMS 场景概率极低
   const [oldDetails] = await db.pool.query(
-    'SELECT id, component_sn, component_material_id, created_time FROM assemble_record_detail WHERE record_id = ?',
+    'SELECT id, component_sn, component_material_id, created_time, scan_time FROM assemble_record_detail WHERE record_id = ?',
     [recordId]
   );
 
@@ -1372,9 +1459,9 @@ async function updateAssembleDetail(data) {
     for (const d of beforeDetails) {
       await conn.execute(
         `INSERT INTO assemble_record_history
-           (record_id, version_no, detail_id, component_sn, component_material_id, origin_created_time, change_by, change_time)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [recordId, nextVersion, d.id, d.component_sn, d.component_material_id, d.created_time, update_by || null]
+           (record_id, version_no, detail_id, component_sn, component_material_id, origin_created_time, scan_time, change_by, change_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [recordId, nextVersion, d.id, d.component_sn, d.component_material_id, d.created_time, d.scan_time, update_by || null]
       );
     }
     // 即使修改前无明细，也写入一条版本标记（component_sn 置空串），保证版本链完整
@@ -1392,21 +1479,29 @@ async function updateAssembleDetail(data) {
     // 已扫行按 SN 匹配保留（保留原 created_time）；未匹配的已扫行删除；新增 SN 插入；
     // 未扫槽位行全部重建（不含扫描信息，重建无损）
     const filled = components
-      .map(c => ({ sn: (c.component_sn || '').trim(), mid: c.component_material_id }))
+      .map(c => ({ sn: (c.component_sn || '').trim(), mid: c.component_material_id, scan_time: c.scan_time || null }))
       .filter(c => c.sn);
     const unfilled = components.filter(c => !(c.component_sn || '').trim());
 
     const [existRows] = await conn.execute(
-      'SELECT id, component_sn FROM assemble_record_detail WHERE record_id = ?',
+      'SELECT id, component_sn, scan_time FROM assemble_record_detail WHERE record_id = ?',
       [recordId]
     );
     const newSnSet = new Set(filled.map(c => c.sn));
     const keepSnSet = new Set();
+    // 构建新 SN -> scan_time 映射，便于保留行更新扫描时间
+    const scanTimeMap = {};
+    filled.forEach(c => { scanTimeMap[c.sn] = c.scan_time; });
 
     // 删除：未扫槽位行 + 已不在新清单中的已扫行；保留仍存在的已扫行
     for (const e of existRows) {
       if (e.component_sn && newSnSet.has(e.component_sn)) {
         keepSnSet.add(e.component_sn);
+        // 保留行：若前端传了新的扫描时间则更新（清除后重扫同一SN的场景）
+        const newScanTime = scanTimeMap[e.component_sn];
+        if (newScanTime && (!e.scan_time || newScanTime !== e.scan_time)) {
+          await conn.execute('UPDATE assemble_record_detail SET scan_time=? WHERE id=?', [newScanTime, e.id]);
+        }
       } else {
         await conn.execute('DELETE FROM assemble_record_detail WHERE id = ?', [e.id]);
       }
@@ -1415,8 +1510,8 @@ async function updateAssembleDetail(data) {
     for (const c of filled) {
       if (!keepSnSet.has(c.sn)) {
         await conn.execute(
-          'INSERT INTO assemble_record_detail (record_id, component_sn, component_material_id) VALUES (?, ?, ?)',
-          [recordId, c.sn, c.mid || null]
+          'INSERT INTO assemble_record_detail (record_id, component_sn, component_material_id, scan_time) VALUES (?, ?, ?, ?)',
+          [recordId, c.sn, c.mid || null, c.scan_time || null]
         );
       }
     }
@@ -1475,7 +1570,7 @@ async function getAssembleHistoryVersion(data) {
   if (!record_id || !version_no) return { success: false, message: '缺少参数' };
   const [rows] = await db.pool.query(
     `SELECT id, record_id, version_no, detail_id, component_sn, component_material_id,
-            origin_created_time, change_by, change_time, remark
+            origin_created_time, scan_time, change_by, change_time, remark
      FROM assemble_record_history WHERE record_id = ? AND version_no = ?
      ORDER BY id`,
     [record_id, version_no]
@@ -1552,7 +1647,7 @@ async function getAssembleAnalysis(data) {
 
   // 4. 当前最新明细（assemble_record_detail）
   const [curDetails] = await db.pool.query(
-    `SELECT component_material_id, component_sn FROM assemble_record_detail WHERE record_id = ? ORDER BY id`,
+    `SELECT component_material_id, component_sn, scan_time FROM assemble_record_detail WHERE record_id = ? ORDER BY id`,
     [record.id]
   );
 
@@ -1722,14 +1817,15 @@ async function getInspectionHistoryVersion(data) {
   const { record_id, version_no } = data || {};
   if (!record_id || !version_no) return { success: false, message: '缺少参数' };
   const [rows] = await db.pool.query(
-    `SELECT id, record_id, version_no, detail_id, item_id, item_name, measured_val, measured_text,
-            is_pass, origin_created_time, remark, change_by, change_time
+    `SELECT id, record_id, version_no, detail_id, item_id, item_name, measured_val, measured_text, image_url,
+            is_pass, origin_created_time, entry_time, remark, change_by, change_time, attachments
      FROM inspection_record_history WHERE record_id = ? AND version_no = ?
      ORDER BY id`,
     [record_id, version_no]
   );
   if (!rows.length) return { success: false, message: '历史版本不存在' };
   const details = rows.filter(r => r.detail_id != null);
+  details.forEach(d => { d.attachments = normAttach(d.attachments); });
   return {
     success: true,
     data: {
@@ -1816,8 +1912,8 @@ async function createInspectRule(data) {
     const ruleId = headRes.insertId;
     for (const item of items) {
       await conn.execute(
-        'INSERT INTO inspection_rule_item (rule_id, rule_code, item_id, item_name, standard_value, standard_range, seq, create_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [ruleId, rule_code, item.item_id, item.item_name || null, item.standard_value, item.standard_range, Number(item.seq) || 0, create_by || null]
+        'INSERT INTO inspection_rule_item (rule_id, rule_code, item_id, item_name, standard_value, standard_range, image_url, seq, create_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [ruleId, rule_code, item.item_id, item.item_name || null, item.standard_value, item.standard_range, item.image_url || null, Number(item.seq) || 0, create_by || null]
       );
     }
     await conn.commit();
@@ -1869,6 +1965,164 @@ async function updateMaterial(data) {
   params.push(material_id);
   await db.pool.query(`UPDATE material SET ${sets.join(', ')} WHERE material_id = ?`, params);
   return { success: true, data: { material_id } };
+}
+
+// ========== 供应商 ==========
+// 查询供应商
+// 入参: { supplier_name, page, page_size }
+async function querySuppliers(data = {}) {
+  const { where, params } = buildConditions({
+    supplier_name: ['supplier_name', 'like']
+  }, data);
+  return {
+    success: true,
+    data: await pagedQuery({
+      baseSql: 'SELECT id, supplier_name, create_by, created_time, update_by, update_time FROM supplier',
+      countSql: 'SELECT COUNT(*) AS total FROM supplier',
+      where, params, orderBy: 'id DESC', data
+    })
+  };
+}
+
+// 新增供应商（id 由数据库自增流水生成）
+// 入参: { supplier_name, create_by }
+async function createSupplier(data) {
+  const name = String(data?.supplier_name || '').trim();
+  if (!name) return { success: false, message: '请输入供应商名称' };
+  const [r] = await db.pool.query(
+    'INSERT INTO supplier (supplier_name, create_by, created_time) VALUES (?, ?, NOW())',
+    [name, data.create_by || null]
+  );
+  return { success: true, data: { id: r.insertId } };
+}
+
+// 修改供应商
+// 入参: { id, supplier_name, update_by }
+async function updateSupplier(data) {
+  const { id, supplier_name, update_by } = data;
+  if (!id) return { success: false, message: '缺少 id' };
+  const name = String(supplier_name || '').trim();
+  if (!name) return { success: false, message: '请输入供应商名称' };
+  const exist = await db.query('SELECT id FROM supplier WHERE id = ?', [id]);
+  if (!exist.length) return { success: false, message: `供应商不存在: ${id}` };
+  await db.pool.query(
+    'UPDATE supplier SET supplier_name = ?, update_by = ?, update_time = NOW() WHERE id = ?',
+    [name, update_by || null, id]
+  );
+  return { success: true, data: { id } };
+}
+
+// ========== 到货单 ==========
+// 查询到货单
+// 入参: { material_id, recorder, arrival_date_start, arrival_date_end, page, page_size }
+async function queryArrivalOrders(data = {}) {
+  const { where, params } = buildConditions({
+    material_id: ['a.material_id', 'like'],
+    recorder: ['a.recorder', 'like'],
+    supplier_id: ['a.supplier_id', 'eq']
+  }, data);
+  const conditions = where ? [where.replace(/^ WHERE /, '')] : [];
+  const allParams = [...params];
+  if (data.arrival_date_start) { conditions.push('a.arrival_date >= ?'); allParams.push(String(data.arrival_date_start).slice(0, 10)); }
+  if (data.arrival_date_end) { conditions.push('a.arrival_date <= ?'); allParams.push(String(data.arrival_date_end).slice(0, 10)); }
+  const finalWhere = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+  return {
+    success: true,
+    data: await pagedQuery({
+      baseSql: `SELECT a.id, a.arrival_date, a.material_id, m.material_name, m.material_spec,
+                       a.supplier_id, s.supplier_name,
+                       a.quantity, a.recorder, a.create_by, a.created_time, a.update_by, a.update_time
+                FROM arrival_order a
+                LEFT JOIN material m ON m.material_id = a.material_id
+                LEFT JOIN supplier s ON s.id = a.supplier_id`,
+      countSql: 'SELECT COUNT(*) AS total FROM arrival_order a',
+      where: finalWhere, params: allParams, orderBy: 'a.arrival_date DESC, a.id DESC', data
+    })
+  };
+}
+
+// 新增到货单
+// 入参: { arrival_date, material_id, supplier_id, quantity, recorder, create_by }
+async function createArrivalOrder(data) {
+  const { arrival_date, material_id, supplier_id, quantity, recorder, create_by } = data;
+  if (!arrival_date) return { success: false, message: '请选择到货日期' };
+  const mid = String(material_id || '').trim();
+  if (!mid) return { success: false, message: '请输入物料号' };
+  const mat = await db.findOne('material', { material_id: mid });
+  if (!mat) return { success: false, message: `物料不存在: ${mid}` };
+  const sid = Number(supplier_id);
+  if (!Number.isInteger(sid) || sid <= 0) return { success: false, message: '请选择供应商' };
+  const sup = await db.findOne('supplier', { id: sid });
+  if (!sup) return { success: false, message: `供应商不存在: ${sid}` };
+  const qty = Number(quantity);
+  if (!Number.isFinite(qty) || qty <= 0) return { success: false, message: '数量必须为大于 0 的数字' };
+  const rec = String(recorder || '').trim();
+  if (!rec) return { success: false, message: '请输入录入人' };
+  const [r] = await db.pool.query(
+    'INSERT INTO arrival_order (arrival_date, material_id, supplier_id, quantity, recorder, create_by, created_time) VALUES (?, ?, ?, ?, ?, ?, NOW())',
+    [String(arrival_date).slice(0, 10), mid, sid, qty, rec, create_by || null]
+  );
+  return { success: true, data: { id: r.insertId } };
+}
+
+// 修改到货单
+// 入参: { id, arrival_date, material_id, supplier_id, quantity, recorder, update_by }
+async function updateArrivalOrder(data) {
+  const { id, arrival_date, material_id, supplier_id, quantity, recorder, update_by } = data;
+  if (!id) return { success: false, message: '缺少 id' };
+  const exist = await db.query('SELECT id FROM arrival_order WHERE id = ?', [id]);
+  if (!exist.length) return { success: false, message: '到货单不存在' };
+  const sets = []; const params = [];
+  if (arrival_date !== undefined) {
+    if (!arrival_date) return { success: false, message: '请选择到货日期' };
+    sets.push('arrival_date = ?'); params.push(String(arrival_date).slice(0, 10));
+  }
+  if (material_id !== undefined) {
+    const mid = String(material_id || '').trim();
+    if (!mid) return { success: false, message: '请输入物料号' };
+    const mat = await db.findOne('material', { material_id: mid });
+    if (!mat) return { success: false, message: `物料不存在: ${mid}` };
+    sets.push('material_id = ?'); params.push(mid);
+  }
+  if (supplier_id !== undefined) {
+    const sid = Number(supplier_id);
+    if (!Number.isInteger(sid) || sid <= 0) return { success: false, message: '请选择供应商' };
+    const sup = await db.findOne('supplier', { id: sid });
+    if (!sup) return { success: false, message: `供应商不存在: ${sid}` };
+    sets.push('supplier_id = ?'); params.push(sid);
+  }
+  if (quantity !== undefined) {
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) return { success: false, message: '数量必须为大于 0 的数字' };
+    sets.push('quantity = ?'); params.push(qty);
+  }
+  if (recorder !== undefined) {
+    const rec = String(recorder || '').trim();
+    if (!rec) return { success: false, message: '请输入录入人' };
+    sets.push('recorder = ?'); params.push(rec);
+  }
+  if (!sets.length) return { success: false, message: '没有需要更新的字段' };
+  sets.push('update_by = ?'); params.push(update_by || null);
+  sets.push('update_time = NOW()');
+  params.push(id);
+  await db.pool.query(`UPDATE arrival_order SET ${sets.join(', ')} WHERE id = ?`, params);
+  return { success: true, data: { id } };
+}
+
+// 批量删除到货单
+// 入参: { ids: [1,2,3] }  单条也支持：{ id: 5 }
+async function deleteArrivalOrders(data) {
+  let ids = [];
+  if (Array.isArray(data?.ids)) ids = data.ids;
+  else if (data?.id != null) ids = [data.id];
+  if (!ids.length) return { success: false, message: '未指定要删除的记录' };
+  const ph = ids.map(() => '?').join(',');
+  const exist = await db.query(`SELECT id FROM arrival_order WHERE id IN (${ph})`, ids);
+  if (!exist.length) return { success: false, message: '未找到对应记录' };
+  const realIds = exist.map(r => r.id);
+  const ph2 = realIds.map(() => '?').join(',');
+  await db.query(`DELETE FROM arrival_order WHERE id IN (${ph2})`, realIds);
+  return { success: true, data: { deleted: realIds.length } };
 }
 
 // 接口20：获取检验规则列表（rule_code + rule_desc），供物料多选关联
@@ -2471,6 +2725,636 @@ async function queryYieldAnalysis(data = {}) {
   return { success: true, data: { header, items: itemList } };
 }
 
+// 良率报表（表格形式）：筛选条件与良率分析一致，额外统计平均检验时长
+// 检验时长 = 同一检验单明细中 entry_time 最大值与最小值的差额；平均时长 = 各检验单检验时长的平均值
+async function queryYieldReport(data = {}) {
+  const { date_start, date_end } = data;
+  // 支持多物料：material_ids 数组优先，兼容旧的单个 material_id
+  let ids = Array.isArray(data.material_ids) ? data.material_ids : [];
+  if (!ids.length && data.material_id) ids = [data.material_id];
+  ids = ids.filter(Boolean).map(v => String(v).trim()).filter(Boolean);
+  if (!ids.length) return { success: false, message: '请选择物料' };
+  if (!date_start || !date_end) return { success: false, message: '请选择时间范围' };
+
+  const start = String(date_start).slice(0, 10) + ' 00:00:00';
+  const end = String(date_end).slice(0, 10) + ' 23:59:59';
+
+  const groups = [];
+  for (const mid of ids) {
+    const group = await buildYieldReportGroup(mid, start, end);
+    if (group) groups.push(group);
+  }
+  if (!groups.length) return { success: false, message: '所选物料在该时间范围内暂无检验数据' };
+
+  return { success: true, data: { groups, skipped: ids.length - groups.length } };
+}
+
+// 单个物料的良率报表数据
+async function buildYieldReportGroup(material_id, start, end) {
+  const [mat] = await db.pool.query(
+    'SELECT material_id, material_name, material_spec FROM material WHERE material_id = ?',
+    [material_id]
+  );
+  if (!mat.length) return null;
+
+
+  // 汇总：检验单数量 + 平均良率
+  const [summary] = await db.pool.query(
+    `SELECT COUNT(DISTINCT r.id) AS record_count,
+            AVG(record_pr.pass_rate) AS avg_yield
+     FROM inspection_record r
+     JOIN (
+       SELECT record_id,
+              SUM(CASE WHEN is_pass = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) AS pass_rate
+       FROM inspection_record_detail
+       WHERE is_pass IS NOT NULL
+       GROUP BY record_id
+     ) record_pr ON record_pr.record_id = r.id
+     WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ?`,
+    [material_id, start, end]
+  );
+
+  // 该物料在时间范围内无任何检验单：直接过滤掉，不参与报表
+  if (!Number(summary[0].record_count)) return null;
+
+  // 拒收数量
+  const [reject] = await db.pool.query(
+    `SELECT COUNT(*) AS reject_count
+     FROM inspection_record r
+     WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ?
+       AND r.process_result = '拒绝'`,
+    [material_id, start, end]
+  );
+
+  // 平均检验时长：先按检验单取 entry_time 极差，再对所有检验单求平均
+  const [duration] = await db.pool.query(
+    `SELECT AVG(t.duration_sec) AS avg_sec, COUNT(*) AS cnt
+     FROM (
+       SELECT TIMESTAMPDIFF(SECOND, MIN(d.entry_time), MAX(d.entry_time)) AS duration_sec
+       FROM inspection_record r
+       JOIN inspection_record_detail d ON d.record_id = r.id
+       WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ?
+         AND d.entry_time IS NOT NULL
+       GROUP BY r.id
+     ) t`,
+    [material_id, start, end]
+  );
+
+  // 检验项目明细
+  const [items] = await db.pool.query(
+    `SELECT d.item_id, d.item_name,
+            MAX(ri.standard_value) AS standard_value,
+            MAX(ri.standard_range) AS standard_range,
+            COUNT(*) AS check_count,
+            SUM(CASE WHEN d.is_pass = 1 THEN 1 ELSE 0 END) AS pass_count
+     FROM inspection_record_detail d
+     JOIN inspection_record r ON r.id = d.record_id
+       AND r.material_id = ?
+       AND r.inspect_date BETWEEN ? AND ?
+     LEFT JOIN inspection_rule_item ri ON ri.item_id = d.item_id
+       AND FIND_IN_SET(ri.rule_code, r.rule_code)
+     WHERE d.is_pass IS NOT NULL
+     GROUP BY d.item_id, d.item_name
+     ORDER BY check_count DESC`,
+    [material_id, start, end]
+  );
+
+  const header = {
+    material_id: mat[0].material_id,
+    material_name: mat[0].material_name,
+    material_spec: mat[0].material_spec,
+    record_count: summary[0].record_count || 0,
+    reject_count: reject[0].reject_count || 0,
+    avg_yield: summary[0].avg_yield ? Number((summary[0].avg_yield * 100).toFixed(2)) : 0,
+    avg_duration_sec: duration[0].avg_sec === null || duration[0].avg_sec === undefined
+      ? null : Math.round(Number(duration[0].avg_sec)),
+    duration_record_count: duration[0].cnt || 0
+  };
+
+  const itemList = items.map(it => ({
+    item_id: it.item_id,
+    item_name: it.item_name,
+    standard_value: it.standard_value || '',
+    standard_range: it.standard_range || '',
+    check_count: Number(it.check_count) || 0,
+    pass_count: Number(it.pass_count) || 0,
+    pass_rate: it.check_count ? Number(((it.pass_count / it.check_count) * 100).toFixed(2)) : 0
+  }));
+
+  return { header, items: itemList };
+}
+
+// 良率明细报表：在良率报表基础上，按检验单横向展开各检验项目的测量值
+// 每个物料一张表：行=检验项目，列=检验单（按检验日期升序），单元格=该单该项目的测量值
+async function queryYieldDetailReport(data = {}) {
+  const { date_start, date_end } = data;
+  let ids = Array.isArray(data.material_ids) ? data.material_ids : [];
+  if (!ids.length && data.material_id) ids = [data.material_id];
+  ids = ids.filter(Boolean).map(v => String(v).trim()).filter(Boolean);
+  if (!date_start || !date_end) return { success: false, message: '请选择时间范围' };
+
+  const start = String(date_start).slice(0, 10) + ' 00:00:00';
+  const end = String(date_end).slice(0, 10) + ' 23:59:59';
+
+  // 未选物料时，取该时间范围内有检验数据的所有物料
+  if (!ids.length) {
+    const [all] = await db.pool.query(
+      `SELECT DISTINCT material_id FROM inspection_record
+       WHERE inspect_date BETWEEN ? AND ? AND material_id IS NOT NULL AND material_id != ''`,
+      [start, end]
+    );
+    ids = all.map(r => r.material_id);
+  }
+
+  const groups = [];
+  for (const mid of ids) {
+    const group = await buildYieldDetailReportGroup(mid, start, end);
+    if (group) groups.push(group);
+  }
+  if (!groups.length) return { success: false, message: '该时间范围内暂无检验数据' };
+
+  return { success: true, data: { groups, skipped: ids.length - groups.length } };
+}
+
+// 单个物料的良率明细报表：汇总口径沿用良率报表，另按检验单横向展开明细
+async function buildYieldDetailReportGroup(material_id, start, end) {
+  const base = await buildYieldReportGroup(material_id, start, end);
+  if (!base) return null;
+
+  // 检验项目：包含未判定项目（有一种录入值即展示），统计只计已判定行
+  const [itemRows] = await db.pool.query(
+    `SELECT d.item_id, d.item_name,
+            COUNT(*) AS check_count,
+            SUM(CASE WHEN d.is_pass = 1 THEN 1 ELSE 0 END) AS pass_count,
+            SUM(CASE WHEN d.is_pass IS NOT NULL THEN 1 ELSE 0 END) AS judged_count
+     FROM inspection_record_detail d
+     JOIN inspection_record r ON r.id = d.record_id
+       AND r.material_id = ? AND r.inspect_date BETWEEN ? AND ?
+     GROUP BY d.item_id, d.item_name
+     ORDER BY check_count DESC, d.item_id`,
+    [material_id, start, end]
+  );
+
+  // 标准值/区间：按该时间段内实际使用的检验规则取
+  const [ruleRows] = await db.pool.query(
+    `SELECT DISTINCT rule_code FROM inspection_record
+     WHERE material_id = ? AND inspect_date BETWEEN ? AND ?
+       AND rule_code IS NOT NULL AND rule_code != ''`,
+    [material_id, start, end]
+  );
+  const ruleCodes = ruleRows.map(r => r.rule_code);
+  const stdMap = new Map();
+  if (ruleCodes.length) {
+    const [stdRows] = await db.pool.query(
+      `SELECT item_id, MAX(standard_value) AS standard_value, MAX(standard_range) AS standard_range
+       FROM inspection_rule_item
+       WHERE FIND_IN_SET(rule_code, ?)
+       GROUP BY item_id`,
+      [ruleCodes.join(',')]
+    );
+    stdRows.forEach(r => stdMap.set(r.item_id, r));
+  }
+
+  // 检验单 + 各项目明细值（按检验单先后排序，作为横向列顺序）
+  const [detailRows] = await db.pool.query(
+    `SELECT r.id AS record_id, r.batch_no, r.inspect_date,
+            d.item_id, d.measured_val, d.measured_text, d.image_url
+     FROM inspection_record r
+     JOIN inspection_record_detail d ON d.record_id = r.id
+     WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ?
+     ORDER BY r.inspect_date ASC, r.id ASC`,
+    [material_id, start, end]
+  );
+
+  const records = [];
+  const recMap = new Map();
+  for (const row of detailRows) {
+    let rec = recMap.get(row.record_id);
+    if (!rec) {
+      rec = { record_id: row.record_id, batch_no: row.batch_no, inspect_date: row.inspect_date, cells: new Map() };
+      recMap.set(row.record_id, rec);
+      records.push(rec);
+    }
+    rec.cells.set(row.item_id, {
+      val: row.measured_val === null || row.measured_val === undefined ? '' : String(row.measured_val),
+      text: row.measured_text || '',
+      img: row.image_url || ''
+    });
+  }
+
+  const itemList = itemRows.map(it => {
+    const std = stdMap.get(it.item_id) || {};
+    const judged = Number(it.judged_count) || 0;
+    const pass = Number(it.pass_count) || 0;
+    return {
+      item_id: it.item_id,
+      item_name: it.item_name,
+      standard_value: std.standard_value || '',
+      standard_range: std.standard_range || '',
+      check_count: Number(it.check_count) || 0,
+      pass_count: pass,
+      judged_count: judged,
+      pass_rate: judged ? Number(((pass / judged) * 100).toFixed(2)) : 0,
+      values: records.map(rec => rec.cells.get(it.item_id) || { val: '', text: '', img: '' })
+    };
+  });
+
+  return {
+    header: base.header,
+    records: records.map(r => ({ record_id: r.record_id, batch_no: r.batch_no, inspect_date: r.inspect_date })),
+    items: itemList
+  };
+}
+
+// 良率分析：单个检验项目的明细数据（测量值、检验时间、SN 等）
+// 入参: { material_id, date_start, date_end, item_id, page, page_size }
+async function queryYieldItemDetail(data = {}) {
+  const { material_id, date_start, date_end, item_id } = data;
+  if (!material_id) return { success: false, message: '请选择物料' };
+  if (!date_start || !date_end) return { success: false, message: '请选择时间范围' };
+  if (!item_id) return { success: false, message: '缺少检验项目' };
+
+  const start = String(date_start).slice(0, 10) + ' 00:00:00';
+  const end = String(date_end).slice(0, 10) + ' 23:59:59';
+  const page = Math.max(1, Number(data.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(data.page_size) || 30));
+
+  const where = ' WHERE r.material_id = ? AND r.inspect_date BETWEEN ? AND ? AND d.item_id = ? AND d.is_pass IS NOT NULL';
+  const params = [material_id, start, end, item_id];
+
+  // 标准值/区间按 (record, item) 匹配规则；同一 item 可能匹配多条规则，用 MAX 合并，避免明细行重复
+  const baseSql = `
+    SELECT d.id, d.record_id, r.batch_no AS sn, r.inspect_date,
+           d.item_id, d.item_name, d.measured_val, d.measured_text, d.is_pass,
+           d.remark, d.entry_time, d.created_time,
+           MAX(ri.standard_value) AS standard_value,
+           MAX(ri.standard_range) AS standard_range,
+           r.inspector, r.result AS record_result, r.process_result
+    FROM inspection_record_detail d
+    JOIN inspection_record r ON r.id = d.record_id
+    LEFT JOIN inspection_rule_item ri ON ri.item_id = d.item_id AND FIND_IN_SET(ri.rule_code, r.rule_code)
+    ${where}
+    GROUP BY d.id, d.record_id, r.batch_no, r.inspect_date, d.item_id, d.item_name,
+             d.measured_val, d.measured_text, d.is_pass, d.remark, d.entry_time,
+             d.created_time, r.inspector, r.result, r.process_result`;
+
+  const [rows] = await db.pool.query(
+    `${baseSql} ORDER BY r.inspect_date DESC, d.id DESC LIMIT ? OFFSET ?`,
+    [...params, pageSize, (page - 1) * pageSize]
+  );
+  const [countRows] = await db.pool.query(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN d.is_pass = 1 THEN 1 ELSE 0 END) AS pass_count
+     FROM inspection_record_detail d
+     JOIN inspection_record r ON r.id = d.record_id
+     ${where}`,
+    params
+  );
+
+  return {
+    success: true,
+    data: {
+      item_id,
+      item_name: rows.length ? rows[0].item_name : '',
+      total: countRows[0].total,
+      page,
+      page_size: pageSize,
+      pass_count: Number(countRows[0].pass_count) || 0,
+      list: rows
+    }
+  };
+}
+
+// 接口：库存异动报表（按物料一行）
+// 字段口径：
+//   入库数量  = arrival_order.quantity 按物料汇总
+//   厂家名称  = 该物料最新一次到货的 supplier_name（无到货为空）
+//   物料入库时间 = MAX(arrival_date)
+//   已检测数量 = inspection_record 按物料计数（一张检验单 = 一个已检测 SN）
+//   待检测数量 = 入库数量 - 已检测数量
+//   已装配    = assemble_record_detail（联 status=30 的装配单）按 component_material_id 计数
+//   剩余库存  = 入库数量 - 已装配
+// 筛选：入库日期范围（arrival_order.arrival_date）、物料关键词（料号或品名）
+async function queryStockMovementReport(data = {}) {
+  const { date_start, date_end, keyword, material_ids, page = 1, page_size = 20 } = data;
+
+  // 时间条件（入库时间）：有值则严格范围，无值则不过滤
+  let arrivalDateWhere = '';
+  let arrivalDateParams = [];
+  if (date_start && date_end) {
+    const start = String(date_start).slice(0, 10) + ' 00:00:00';
+    const end = String(date_end).slice(0, 10) + ' 23:59:59';
+    arrivalDateWhere = 'WHERE a.arrival_date BETWEEN ? AND ?';
+    arrivalDateParams = [start, end];
+  }
+
+  const kw = String(keyword || '').trim();
+  const kwCond = kw
+    ? 'AND (m.material_id LIKE CONCAT(\'%\', ?, \'%\') OR m.material_name LIKE CONCAT(\'%\', ?, \'%\'))'
+    : '';
+  const kwParams = kw ? [kw, kw] : [];
+
+  // 物料多选过滤：material_ids 非空时按选中料号过滤，空数组=全部
+  const rawIds = Array.isArray(material_ids) ? material_ids : [];
+  const matIds = rawIds.map(v => String(v).trim()).filter(Boolean);
+  const matCond = matIds.length
+    ? 'AND m.material_id IN (' + matIds.map(() => '?').join(',') + ')'
+    : '';
+  const matParams = matIds.slice();
+
+  const pageN = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(500, Number(page_size) || 20));
+  const offset = (pageN - 1) * size;
+
+  const params = [...arrivalDateParams, ...kwParams, ...matParams];
+
+  const countSql = `
+    SELECT COUNT(*) AS total FROM (
+      SELECT m.material_id
+      FROM material m
+      JOIN (
+        SELECT material_id FROM arrival_order a ${arrivalDateWhere}
+        GROUP BY material_id
+      ) u ON u.material_id = m.material_id
+      WHERE 1=1
+      ${kwCond}
+      ${matCond}
+    ) t
+  `;
+  const [countRows] = await db.pool.query(countSql, params);
+  const total = Number(countRows[0].total) || 0;
+
+  if (total === 0) {
+    return { success: true, data: { list: [], total: 0, page: pageN, page_size: size } };
+  }
+
+  const dataSql = `
+    SELECT m.material_id, m.material_name, m.material_spec,
+           COALESCE(t_in.in_qty, 0) AS in_qty,
+           COALESCE(t_in.supplier_name, '') AS supplier_name,
+           t_in.last_arrival_date,
+           COALESCE(t_ck.checked_qty, 0) AS checked_qty,
+           COALESCE(t_as.assembled_qty, 0) AS assembled_qty,
+           COALESCE(t_in.in_qty, 0) - COALESCE(t_ck.checked_qty, 0) AS pending_qty,
+           COALESCE(t_in.in_qty, 0) - COALESCE(t_as.assembled_qty, 0) AS remaining_qty
+    FROM material m
+    JOIN (
+      SELECT material_id FROM arrival_order a ${arrivalDateWhere}
+      GROUP BY material_id
+    ) u ON u.material_id = m.material_id
+    LEFT JOIN (
+      SELECT a.material_id,
+             SUM(a.quantity) AS in_qty,
+             MAX(a.arrival_date) AS last_arrival_date,
+             (SELECT s.supplier_name FROM arrival_order a2
+              JOIN supplier s ON s.id = a2.supplier_id
+              WHERE a2.material_id = a.material_id
+              ORDER BY a2.arrival_date DESC, a2.id DESC LIMIT 1) AS supplier_name
+      FROM arrival_order a
+      ${arrivalDateWhere}
+      GROUP BY a.material_id
+    ) t_in ON t_in.material_id = m.material_id
+    LEFT JOIN (
+      SELECT material_id, COUNT(*) AS checked_qty
+      FROM inspection_record
+      GROUP BY material_id
+    ) t_ck ON t_ck.material_id = m.material_id
+    LEFT JOIN (
+      SELECT d.component_material_id AS material_id, COUNT(*) AS assembled_qty
+      FROM assemble_record_detail d
+      JOIN assemble_record ar ON ar.id = d.record_id AND ar.status = 30
+      GROUP BY d.component_material_id
+    ) t_as ON t_as.material_id = m.material_id
+    WHERE 1=1
+    ${kwCond}
+    ${matCond}
+    ORDER BY m.material_id
+    LIMIT ${size} OFFSET ${offset}
+  `;
+  // dataSql 中日期条件出现两次（u 子查询 + t_in 子查询），参数需相应传两份
+  const dataParams = [...arrivalDateParams, ...arrivalDateParams, ...kwParams, ...matParams];
+  const [rows] = await db.pool.query(dataSql, dataParams);
+
+  const list = rows.map(r => ({
+    material_id: r.material_id,
+    material_name: r.material_name,
+    material_spec: r.material_spec || '',
+    in_qty: Number(r.in_qty) || 0,
+    supplier_name: r.supplier_name || '',
+    last_arrival_date: r.last_arrival_date ? String(r.last_arrival_date).slice(0, 10) : '',
+    checked_qty: Number(r.checked_qty) || 0,
+    pending_qty: Number(r.pending_qty) || 0,
+    assembled_qty: Number(r.assembled_qty) || 0,
+    remaining_qty: Number(r.remaining_qty) || 0
+  }));
+
+  return { success: true, data: { list, total, page: pageN, page_size: size } };
+}
+
+// 库存异动报表 - 物料筛选下拉数据源
+// 只返回有入库数据（arrival_order 中出现过）的物料，供前端多选/全选；没有数据的物料不进下拉
+async function queryStockMovementMaterials() {
+  const [rows] = await db.pool.query(`
+    SELECT DISTINCT m.material_id, m.material_name, m.material_spec
+    FROM arrival_order a
+    JOIN material m ON m.material_id = a.material_id
+    ORDER BY m.material_id
+  `);
+  const list = rows.map(r => ({
+    material_id: r.material_id,
+    material_name: r.material_name || '',
+    material_spec: r.material_spec || ''
+  }));
+  return { success: true, data: { list } };
+}
+
+// 接口：检验执行报表
+// 以检验单为粒度（每行 = 一个检验单），每个检验单关联到货单、供应商、物料，
+// 良率 = SUM(is_pass=1) / COUNT(*) 来自 inspection_record_detail
+// 到货单维度的已检验数/待检验数/检验周期也一并给出（前端到货单合并行时用）
+async function queryInspectionExecutionReport(data) {
+  const {
+    date_start, date_end, keyword, supplier_id, is_complete,
+    page = 1, page_size = 20
+  } = data || {};
+
+  const size = Math.max(1, Math.min(500, Number(page_size) || 20));
+  const offset = (Math.max(1, Number(page) || 1) - 1) * size;
+
+  // 到货单日期条件（主查询里用在 JOIN ON 中过滤 arrival_order）
+  let arrDateWhere = '';
+  const arrDateParams = [];
+  if (date_start) {
+    arrDateWhere += ' AND a.arrival_date >= ?';
+    arrDateParams.push(date_start);
+  }
+  if (date_end) {
+    arrDateWhere += ' AND a.arrival_date <= ?';
+    arrDateParams.push(date_end);
+  }
+
+  // 关键词（品号/品名/SN号）
+  const kw = String(keyword || '').trim();
+  const kwCond = kw
+    ? 'AND (m.material_id LIKE CONCAT(\'%\', ?, \'%\') OR m.material_name LIKE CONCAT(\'%\', ?, \'%\') OR ir.batch_no LIKE CONCAT(\'%\', ?, \'%\'))'
+    : '';
+  const kwParams = kw ? [kw, kw, kw] : [];
+
+  // 供应商过滤
+  let supCond = '';
+  const supParams = [];
+  if (supplier_id) {
+    supCond = 'AND a.supplier_id = ?';
+    supParams.push(Number(supplier_id));
+  }
+
+  // 检验完成状态（0/1/null 全部）
+  let compCond = '';
+  const compParams = [];
+  if (is_complete !== undefined && is_complete !== null && is_complete !== '') {
+    compCond = 'AND ir.is_complete = ?';
+    compParams.push(Number(is_complete));
+  }
+
+  const params = [...arrDateParams, ...kwParams, ...supParams, ...compParams];
+
+  // 分页总数
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM inspection_record ir
+    LEFT JOIN arrival_order a ON a.id = ir.arrival_order_id ${arrDateWhere}
+    LEFT JOIN supplier s ON s.id = a.supplier_id
+    LEFT JOIN material m ON m.material_id = ir.material_id
+    WHERE 1=1
+      ${kwCond}
+      ${supCond}
+      ${compCond}
+  `;
+  const [countRows] = await db.pool.query(countSql, params);
+  const total = Number(countRows[0].total) || 0;
+
+  // 数据查询
+  const dataSql = `
+    SELECT
+      a.id AS arrival_order_id,
+      a.arrival_date,
+      m.material_id,
+      m.material_name,
+      m.material_spec,
+      a.quantity AS arrival_qty,
+      s.supplier_name,
+      ir.id AS inspection_id,
+      ir.batch_no,
+      ir.inspect_date,
+      ir.inspector,
+      ir.is_complete,
+      ir.result AS inspect_result,
+      IFNULL(pass_cnt.pass_count, 0) AS pass_count,
+      IFNULL(det_cnt.total_count, 0) AS total_count,
+      ROUND(IFNULL(pass_cnt.pass_count, 0) / NULLIF(IFNULL(det_cnt.total_count, 0), 0) * 100, 2) AS yield_rate
+    FROM inspection_record ir
+    LEFT JOIN arrival_order a ON a.id = ir.arrival_order_id ${arrDateWhere}
+    LEFT JOIN supplier s ON s.id = a.supplier_id
+    LEFT JOIN material m ON m.material_id = ir.material_id
+    LEFT JOIN (
+      SELECT record_id, COUNT(*) AS pass_count
+      FROM inspection_record_detail
+      WHERE is_pass = 1
+      GROUP BY record_id
+    ) pass_cnt ON pass_cnt.record_id = ir.id
+    LEFT JOIN (
+      SELECT record_id, COUNT(*) AS total_count
+      FROM inspection_record_detail
+      GROUP BY record_id
+    ) det_cnt ON det_cnt.record_id = ir.id
+    WHERE 1=1
+      ${kwCond}
+      ${supCond}
+      ${compCond}
+    ORDER BY a.arrival_date ASC, a.id ASC, ir.id ASC
+    LIMIT ${size} OFFSET ${offset}
+  `;
+  const [rows] = await db.pool.query(dataSql, params);
+
+  // 到货单维度统计（用于前端到货单合并行显示已检验/待检验/检验周期）
+  // 取当前页涉及到的所有 arrival_order_id 一次性查询
+  const arrIds = rows
+    .map(r => r.arrival_order_id)
+    .filter(id => id !== null && id !== undefined);
+  const arrStatsMap = {};
+  if (arrIds.length) {
+    const [statsRows] = await db.pool.query(
+      `SELECT
+         a.id AS arrival_order_id,
+         a.arrival_date,
+         COUNT(ir.id) AS inspected_count,
+         MAX(ir.inspect_date) AS last_inspect
+       FROM arrival_order a
+       LEFT JOIN inspection_record ir ON ir.arrival_order_id = a.id
+       WHERE a.id IN (${arrIds.map(() => '?').join(',')})
+       GROUP BY a.id, a.arrival_date`,
+      arrIds
+    );
+    statsRows.forEach(r => {
+      // 检验周期 = 最后一张检验单日期 − 到货日期（整天数，按日期部分计算）
+      let cycleDays = '';
+      if (r.last_inspect) {
+        const arrTime = new Date(r.arrival_date).setHours(0, 0, 0, 0);
+        const lastTime = new Date(r.last_inspect).setHours(0, 0, 0, 0);
+        cycleDays = Math.max(0, Math.round((lastTime - arrTime) / (1000 * 60 * 60 * 24)));
+      }
+      arrStatsMap[r.arrival_order_id] = { ...r, cycle_days: cycleDays };
+    });
+  }
+
+  const list = rows.map(r => {
+    const stats = arrStatsMap[r.arrival_order_id];
+    const arrivalQty = Number(r.arrival_qty || 0);
+    const inspectedCount = stats ? Number(stats.inspected_count || 0) : 0;
+    const pendingCount = arrivalQty - inspectedCount;
+    return {
+      arrival_order_id: r.arrival_order_id,
+      arrival_date: r.arrival_date ? new Date(r.arrival_date).toISOString().slice(0, 10) : '',
+      material_id: r.material_id || '',
+      material_name: r.material_name || '',
+      material_spec: r.material_spec || '',
+      arrival_qty: arrivalQty,
+      supplier_name: r.supplier_name || '',
+      inspection_id: r.inspection_id,
+      batch_no: r.batch_no || '',
+      inspect_date: r.inspect_date ? new Date(r.inspect_date).toISOString().slice(0, 19).replace('T', ' ') : '',
+      inspector: r.inspector || '',
+      is_complete: Number(r.is_complete || 0),
+      inspect_result: Number(r.inspect_result || 0),
+      pass_count: Number(r.pass_count || 0),
+      total_count: Number(r.total_count || 0),
+      yield_rate: r.yield_rate || 0,
+      // 到货单维度
+      inspected_count: inspectedCount,
+      pending_count: pendingCount,
+      inspect_cycle: stats ? stats.cycle_days : '',
+      same_arrival_start: false,
+      same_arrival_end: false
+    };
+  });
+
+  // 标记到货单分组边界：前端合并单元格用
+  if (list.length) {
+    let i = 0;
+    while (i < list.length) {
+      const curId = list[i].arrival_order_id;
+      let j = i;
+      while (j < list.length && list[j].arrival_order_id === curId) j++;
+      list[i].same_arrival_start = true;
+      list[j - 1].same_arrival_end = true;
+      i = j;
+    }
+  }
+
+  const pageN = Math.max(1, Number(page) || 1);
+  return { success: true, data: { list, total, page: pageN, page_size: size } };
+}
+
 // 接口27：批量导入 BOM（Excel）
 // Excel 列：主件料号、元件料号、用量
 // 校验：主件/元件料号必填且不相同、用量为正数、Excel 内 (主件+元件) 组合不重复、
@@ -2573,6 +3457,25 @@ async function importBom(data) {
   }
 }
 
+// 自定义报表：解析 SQL 的输出字段名（仅 SELECT），供新增/修改时选择查询条件
+// 入参: { sql_text }
+// 实现：先 EXPLAIN 校验语法，再用 LIMIT 1 执行取列名（不返回数据，开销小）
+async function parseSqlColumns(data) {
+  const sql_text = data?.sql_text;
+  if (!sql_text || !String(sql_text).trim()) return { success: false, message: '请填写 SQL' };
+  const sql = String(sql_text).trim().replace(/;\s*$/, '');
+  if (!/^\s*SELECT\b/i.test(sql)) return { success: false, message: '只允许 SELECT 查询语句' };
+  try {
+    await db.pool.query(`EXPLAIN ${sql}`);
+  } catch (e) {
+    return { success: false, message: `SQL 校验失败：${e.message}` };
+  }
+  // 取一条数据以获得列名（LIMIT 1，不实际加载大量数据）
+  const [, fields] = await db.pool.query(`${sql} LIMIT 1`);
+  const columns = (fields || []).map(f => f.name);
+  return { success: true, data: { columns } };
+}
+
 // 自定义报表：分页查询列表
 async function queryCustomReports(data) {
   const { where, params } = buildConditions({
@@ -2582,20 +3485,48 @@ async function queryCustomReports(data) {
   return {
     success: true,
     data: await pagedQuery({
-      baseSql: 'SELECT id, report_code, report_name, sql_text, create_by, created_time, update_by, update_time FROM custom_report',
+      baseSql: 'SELECT id, report_code, report_name, sql_text, filter_fields, create_by, created_time, update_by, update_time FROM custom_report',
       countSql: 'SELECT COUNT(*) AS total FROM custom_report',
       where, params, orderBy: 'id DESC', data
     })
   };
 }
 
+// 自定义报表：校验并规范化查询条件配置
+// filter_fields: [{ field, label?, op }]  op ∈ like|eq|gt|lt|between
+// 返回 { ok, fields, message }
+const ALLOWED_OPS = ['like', 'eq', 'gt', 'lt', 'between'];
+function normalizeFilterFields(raw, sqlColumns) {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, fields: [] };
+  let arr;
+  try {
+    arr = Array.isArray(raw) ? raw : JSON.parse(raw);
+  } catch {
+    return { ok: false, message: '查询条件配置格式错误（应为 JSON 数组）' };
+  }
+  if (!Array.isArray(arr)) return { ok: false, message: '查询条件配置应为数组' };
+  const colSet = new Set(sqlColumns || []);
+  const fields = [];
+  for (const f of arr) {
+    if (!f || typeof f !== 'object') return { ok: false, message: '查询条件项格式错误' };
+    const field = String(f.field || '').trim();
+    if (!field) return { ok: false, message: '查询条件项缺少 field' };
+    if (sqlColumns && !colSet.has(field)) {
+      return { ok: false, message: `查询条件字段「${field}」不在 SQL 输出字段中` };
+    }
+    const op = ALLOWED_OPS.includes(f.op) ? f.op : 'like';
+    fields.push({ field, label: String(f.label || field).trim(), op });
+  }
+  return { ok: true, fields };
+}
+
 // 自定义报表：新增（保存前用 EXPLAIN 校验 SQL 正确性，仅允许 SELECT）
 async function createCustomReport(data) {
-  const { report_code, report_name, sql_text, create_by } = data || {};
+  const { report_code, report_name, sql_text, create_by, filter_fields } = data || {};
   if (!report_code || !String(report_code).trim()) return { success: false, message: '请填写报表编号' };
   if (!report_name || !String(report_name).trim()) return { success: false, message: '请填写报表名称' };
   if (!sql_text || !String(sql_text).trim()) return { success: false, message: '请填写 SQL' };
-  const sql = String(sql_text).trim();
+  const sql = String(sql_text).trim().replace(/;\s*$/, '');
   if (!/^\s*SELECT\b/i.test(sql)) return { success: false, message: '只允许 SELECT 查询语句' };
   // 校验 SQL 语法（EXPLAIN 不实际执行查询，仅检查语法与执行计划）
   try {
@@ -2603,6 +3534,12 @@ async function createCustomReport(data) {
   } catch (e) {
     return { success: false, message: `SQL 校验失败：${e.message}` };
   }
+  // 解析 SQL 输出字段，用于校验查询条件字段合法性
+  const [, colFields] = await db.pool.query(`${sql} LIMIT 1`);
+  const sqlColumns = (colFields || []).map(f => f.name);
+  const nf = normalizeFilterFields(filter_fields, sqlColumns);
+  if (!nf.ok) return { success: false, message: nf.message };
+
   const code = report_code.trim();
   const [exist] = await db.pool.query('SELECT id FROM custom_report WHERE report_code = ?', [code]);
   if (exist.length) return { success: false, message: `报表编号已存在：${code}` };
@@ -2610,36 +3547,69 @@ async function createCustomReport(data) {
     report_code: code,
     report_name: String(report_name).trim(),
     sql_text: sql,
+    filter_fields: nf.fields.length ? JSON.stringify(nf.fields) : null,
     create_by: create_by || null
   });
   return { success: true, data: { id } };
 }
 
 // 自定义报表：执行报表 SQL 返回列名与数据（限制最多 1000 行）
+// 入参: { id, filters: { field: value } }
+// 支持查询条件：将原 SQL 包为子查询，按 filter_fields 配置与 filters 入参追加 WHERE 条件
 async function getCustomReportData(data) {
-  const { id } = data || {};
+  const { id, filters } = data || {};
   if (!id) return { success: false, message: '缺少报表ID' };
   const [rows] = await db.pool.query(
-    'SELECT report_code, report_name, sql_text FROM custom_report WHERE id = ?', [id]
+    'SELECT report_code, report_name, sql_text, filter_fields FROM custom_report WHERE id = ?', [id]
   );
   if (!rows.length) return { success: false, message: '报表不存在' };
   const report = rows[0];
-  // 执行报表 SQL，并将结果行数限制在 1000 以内（若用户 SQL 已含 LIMIT 则上限覆盖）
-  let execSql = String(report.sql_text).trim().replace(/;\s*$/, '');
-  const limitRe = /\bLIMIT\s+(\d+)(?:\s*(?:,|OFFSET)\s*(\d+))?\s*$/i;
-  const m = execSql.match(limitRe);
-  if (m) {
-    const cap = (n) => Math.min(Number(n), 1000);
-    if (m[2] !== undefined) {
-      // LIMIT offset, count  /  LIMIT count OFFSET offset
-      execSql = execSql.replace(limitRe, `LIMIT ${m[1]}, ${cap(m[2])}`);
-    } else {
-      execSql = execSql.replace(limitRe, `LIMIT ${cap(m[1])}`);
-    }
-  } else {
-    execSql = `${execSql} LIMIT 1000`;
+
+  // 解析查询条件配置
+  let filterFields = [];
+  if (report.filter_fields) {
+    try { filterFields = JSON.parse(report.filter_fields); } catch { filterFields = []; }
   }
-  const [dataRows, fields] = await db.pool.query(execSql);
+
+  // 构建 WHERE 条件（基于 filter_fields 配置与 filters 入参）
+  const whereParts = [];
+  const whereParams = [];
+  const filtersObj = filters || {};
+  for (const ff of filterFields) {
+    const val = filtersObj[ff.field];
+    if (val === undefined || val === null || val === '') continue;
+    // 安全引用字段名（子查询别名 t.字段，支持带点的字段名分段加反引号）
+    const quoted = String(ff.field).split('.').map(p => '`' + p.replace(/`/g, '``') + '`').join('.');
+    const col = `t.${quoted}`;
+    const op = ALLOWED_OPS.includes(ff.op) ? ff.op : 'like';
+    if (op === 'like') {
+      whereParts.push(`${col} LIKE ?`);
+      whereParams.push(`%${String(val)}%`);
+    } else if (op === 'between') {
+      // between 入参为 [v1, v2] 或 "v1,v2"
+      let v1, v2;
+      if (Array.isArray(val)) { v1 = val[0]; v2 = val[1]; }
+      else { const p = String(val).split(','); v1 = p[0]; v2 = p[1]; }
+      if (v1 !== undefined && v1 !== '' && v2 !== undefined && v2 !== '') {
+        whereParts.push(`${col} BETWEEN ? AND ?`);
+        whereParams.push(v1, v2);
+      }
+    } else {
+      whereParts.push(`${col} ${op === 'eq' ? '=' : op === 'gt' ? '>' : '<'} ?`);
+      whereParams.push(val);
+    }
+  }
+
+  // 原 SQL 去除尾部 LIMIT，包为子查询后追加 WHERE 与 LIMIT
+  let baseSql = String(report.sql_text).trim().replace(/;\s*$/, '');
+  const limitRe = /\bLIMIT\s+(\d+)(?:\s*(?:,|OFFSET)\s*(\d+))?\s*$/i;
+  baseSql = baseSql.replace(limitRe, '').trim();
+
+  let execSql = `SELECT * FROM (${baseSql}) t`;
+  if (whereParts.length) execSql += ` WHERE ${whereParts.join(' AND ')}`;
+  execSql += ' LIMIT 1000';
+
+  const [dataRows, fields] = await db.pool.query(execSql, whereParams);
   const columns = (fields || []).map(f => f.name);
   return {
     success: true,
@@ -2647,7 +3617,8 @@ async function getCustomReportData(data) {
       report_code: report.report_code,
       report_name: report.report_name,
       columns,
-      rows: dataRows
+      rows: dataRows,
+      filter_fields: filterFields
     }
   };
 }
@@ -2670,20 +3641,21 @@ async function deleteCustomReports(data) {
 
 // 自定义报表：修改（报表名称与 SQL，报表编号不可改；SQL 同样需通过 EXPLAIN 校验且仅允许 SELECT）
 async function updateCustomReport(data) {
-  const { id, report_name, sql_text, update_by } = data || {};
+  const { id, report_name, sql_text, filter_fields, update_by } = data || {};
   if (!id) return { success: false, message: '缺少报表ID' };
-  const [rows] = await db.pool.query('SELECT id FROM custom_report WHERE id = ?', [id]);
+  const [rows] = await db.pool.query('SELECT id, sql_text FROM custom_report WHERE id = ?', [id]);
   if (!rows.length) return { success: false, message: '报表不存在' };
 
   const sets = [];
   const params = [];
+  let currentSql = rows[0].sql_text;
   if (report_name !== undefined) {
     if (!String(report_name).trim()) return { success: false, message: '报表名称不能为空' };
     sets.push('report_name = ?');
     params.push(String(report_name).trim());
   }
   if (sql_text !== undefined) {
-    const sql = String(sql_text).trim();
+    const sql = String(sql_text).trim().replace(/;\s*$/, '');
     if (!sql) return { success: false, message: 'SQL 不能为空' };
     if (!/^\s*SELECT\b/i.test(sql)) return { success: false, message: '只允许 SELECT 查询语句' };
     try {
@@ -2693,6 +3665,16 @@ async function updateCustomReport(data) {
     }
     sets.push('sql_text = ?');
     params.push(sql);
+    currentSql = sql;
+  }
+  // filter_fields 可单独更新：校验字段需存在于当前（或新）SQL 输出字段中
+  if (filter_fields !== undefined) {
+    const [, colFields] = await db.pool.query(`${currentSql} LIMIT 1`);
+    const sqlColumns = (colFields || []).map(f => f.name);
+    const nf = normalizeFilterFields(filter_fields, sqlColumns);
+    if (!nf.ok) return { success: false, message: nf.message };
+    sets.push('filter_fields = ?');
+    params.push(nf.fields.length ? JSON.stringify(nf.fields) : null);
   }
   if (update_by !== undefined) { sets.push('update_by = ?'); params.push(update_by); }
   sets.push('update_time = NOW()');
@@ -2815,6 +3797,267 @@ async function applyMultiBomEcn(data) {
   };
 }
 
+// ========== 用户管理 ==========
+
+// 用户列表查询
+// 入参: { username, realname, is_active, page, page_size }
+async function queryUsers(data) {
+  const { where, params } = buildConditions({
+    username: ['username', 'like'],
+    realname: ['realname', 'like'],
+    is_active: ['is_active', 'eq']
+  }, data);
+  return {
+    success: true,
+    data: await pagedQuery({
+      baseSql: 'SELECT id, username, realname, is_active, create_by, created_time, update_by, update_time FROM user',
+      countSql: 'SELECT COUNT(*) AS total FROM user',
+      where, params, orderBy: 'id', data
+    })
+  };
+}
+
+// 新增用户
+async function createUser(data) {
+  const { username, password, realname, is_active, create_by } = data || {};
+  if (!username || !password) return { success: false, message: '用户名和密码不能为空' };
+  const exist = await db.findOne('user', { username });
+  if (exist) return { success: false, message: `用户名已存在: ${username}` };
+  await db.insert('user', {
+    username, password, realname: realname || null,
+    is_active: is_active !== undefined ? Number(is_active) : 1,
+    create_by: create_by || null
+  });
+  return { success: true };
+}
+
+// 修改用户
+async function updateUser(data) {
+  const { id, username, password, realname, is_active, update_by } = data || {};
+  if (!id) return { success: false, message: '缺少用户ID' };
+  const exist = await db.findOne('user', { id });
+  if (!exist) return { success: false, message: '用户不存在' };
+  const sets = {};
+  if (username !== undefined && username !== exist.username) {
+    const dup = await db.findOne('user', { username });
+    if (dup && dup.id !== Number(id)) return { success: false, message: `用户名已存在: ${username}` };
+    sets.username = username;
+  }
+  if (password !== undefined && password !== '') sets.password = password;
+  if (realname !== undefined) sets.realname = realname;
+  if (is_active !== undefined) sets.is_active = Number(is_active);
+  if (Object.keys(sets).length === 0) return { success: true, data: { no_change: true } };
+  sets.update_by = update_by || null;
+  sets.update_time = new Date();
+  await db.update('user', sets, { id });
+  return { success: true };
+}
+
+// 删除用户（逻辑删除，置 is_active=0）
+async function deleteUser(data) {
+  const { id, username } = data || {};
+  if (!id && !username) return { success: false, message: '缺少用户ID或用户名' };
+  const where = id ? { id } : { username };
+  const exist = await db.findOne('user', where);
+  if (!exist) return { success: false, message: '用户不存在' };
+  if (exist.username === 'admin') return { success: false, message: '管理员账号不可删除' };
+  await db.update('user', { is_active: 0 }, where);
+  return { success: true };
+}
+
+// ========== 权限管理 ==========
+
+// 权限列表查询
+// 入参: { perm_code, perm_name, perm_type, category, page, page_size }
+async function queryPermissions(data) {
+  const { where, params } = buildConditions({
+    perm_code: ['perm_code', 'like'],
+    perm_name: ['perm_name', 'like'],
+    perm_type: ['perm_type', 'eq'],
+    category: ['category', 'like']
+  }, data);
+  const result = await pagedQuery({
+    baseSql: 'SELECT id, perm_code, perm_name, perm_type, category, description, allowed_users, created_time, update_time FROM permission',
+    countSql: 'SELECT COUNT(*) AS total FROM permission',
+    where, params, orderBy: 'perm_type, category, perm_code', data
+  });
+  // 解析 allowed_users 为数组方便前端
+  result.list = result.list.map(r => ({
+    ...r,
+    allowed_users_list: r.allowed_users ? r.allowed_users.split(',').filter(Boolean) : []
+  }));
+  return { success: true, data: result };
+}
+
+// 修改权限 allowed_users
+async function updatePermission(data) {
+  const { id, allowed_users, update_by } = data || {};
+  if (!id) return { success: false, message: '缺少权限ID' };
+  const exist = await db.findOne('permission', { id });
+  if (!exist) return { success: false, message: '权限不存在' };
+  // 统一为逗号分隔字符串
+  let val = null;
+  if (Array.isArray(allowed_users)) {
+    val = allowed_users.filter(Boolean).join(',') || null;
+  } else if (allowed_users !== undefined && allowed_users !== null && allowed_users !== '') {
+    val = String(allowed_users);
+  }
+  await db.update('permission', {
+    allowed_users: val,
+    update_time: new Date()
+  }, { id });
+  return { success: true };
+}
+
+// 获取当前用户的所有权限（供前端登录后拉取，过滤菜单和功能按钮）
+// allowed_users 为空表示所有活跃用户均有权限
+async function getUserPermissions(username) {
+  if (!username) return { success: false, message: '缺少用户名' };
+  const user = await db.findOne('user', { username });
+  if (!user) return { success: false, message: '用户不存在' };
+  // admin 拥有全部权限
+  if (username === 'admin') {
+    const all = await db.query(
+      'SELECT perm_code, perm_type FROM permission'
+    );
+    return {
+      success: true,
+      data: {
+        username,
+        is_admin: true,
+        menu_perms: all.filter(p => p.perm_type === 'menu').map(p => p.perm_code),
+        func_perms: all.filter(p => p.perm_type === 'func').map(p => p.perm_code)
+      }
+    };
+  }
+  const allPerms = await db.query(
+    'SELECT perm_code, perm_type, allowed_users FROM permission'
+  );
+  const menu_perms = [];
+  const func_perms = [];
+  for (const p of allPerms) {
+    if (!p.allowed_users) {
+      // 空值=所有人可用
+      if (p.perm_type === 'menu') menu_perms.push(p.perm_code);
+      else func_perms.push(p.perm_code);
+    } else {
+      const users = p.allowed_users.split(',').map(s => s.trim());
+      if (users.includes(username)) {
+        if (p.perm_type === 'menu') menu_perms.push(p.perm_code);
+        else func_perms.push(p.perm_code);
+      }
+    }
+  }
+  return {
+    success: true,
+    data: {
+      username,
+      is_admin: false,
+      menu_perms,
+      func_perms
+    }
+  };
+}
+
+// ===== 供应商良率报表 =====
+// 按 供应商+物料 维度统计：到货数量、检验数量、加权良率
+// 时间区间过滤：按到货日期
+async function querySupplierYieldReport(data) {
+  const { date_start, date_end, supplier_id, keyword, page = 1, page_size = 50 } = data || {};
+  const size = Math.max(1, Math.min(500, Number(page_size) || 50));
+  const offset = (Math.max(1, Number(page) || 1) - 1) * size;
+
+  const params = [];
+  let where = '';
+
+  // 到货日期区间
+  if (date_start) { where += ' AND a.arrival_date >= ?'; params.push(date_start); }
+  if (date_end)   { where += ' AND a.arrival_date <= ?'; params.push(date_end); }
+
+  // 供应商过滤
+  if (supplier_id) { where += ' AND a.supplier_id = ?'; params.push(Number(supplier_id)); }
+
+  // 关键词（品号/品名/供应商名）
+  const kw = String(keyword || '').trim();
+  if (kw) {
+    where += ' AND (m.material_id LIKE CONCAT(\'%\', ?, \'%\') OR m.material_name LIKE CONCAT(\'%\', ?, \'%\') OR s.supplier_name LIKE CONCAT(\'%\', ?, \'%\'))';
+    params.push(kw, kw, kw);
+  }
+
+  // 分页总数
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM (
+      SELECT s.id AS supplier_id, m.material_id
+      FROM supplier s
+      JOIN arrival_order a ON a.supplier_id = s.id
+      JOIN material m ON m.material_id = a.material_id
+      WHERE 1=1 ${where}
+      GROUP BY s.id, m.material_id
+    ) t
+  `;
+  const [countRows] = await db.pool.query(countSql, params);
+  const total = Number(countRows[0].total) || 0;
+
+  // 数据查询：供应商+物料维度 LEFT JOIN 检验统计子查询
+  const dataSql = `
+    SELECT
+      s.id AS supplier_id,
+      s.supplier_name,
+      m.material_id,
+      m.material_name,
+      m.material_spec,
+      SUM(a.quantity) AS arrival_qty,
+      IFNULL(ins_stat.inspect_count, 0) AS inspect_count,
+      IFNULL(ins_stat.pass_count, 0) AS pass_count,
+      IFNULL(ins_stat.total_count, 0) AS total_count,
+      IFNULL(ins_stat.weighted_yield, 0) AS weighted_yield
+    FROM supplier s
+    JOIN arrival_order a ON a.supplier_id = s.id
+    JOIN material m ON m.material_id = a.material_id
+    LEFT JOIN (
+      SELECT
+        a2.supplier_id,
+        a2.material_id,
+        COUNT(DISTINCT ir.id) AS inspect_count,
+        SUM(IFNULL(pass_cnt.pass_count, 0)) AS pass_count,
+        SUM(IFNULL(det_cnt.total_count, 0)) AS total_count,
+        ROUND(
+          SUM(IFNULL(pass_cnt.pass_count, 0)) / NULLIF(SUM(IFNULL(det_cnt.total_count, 0)), 0) * 100, 2
+        ) AS weighted_yield
+      FROM arrival_order a2
+      JOIN inspection_record ir ON ir.arrival_order_id = a2.id
+      LEFT JOIN (
+        SELECT record_id, COUNT(*) AS pass_count FROM inspection_record_detail WHERE is_pass = 1 GROUP BY record_id
+      ) pass_cnt ON pass_cnt.record_id = ir.id
+      LEFT JOIN (
+        SELECT record_id, COUNT(*) AS total_count FROM inspection_record_detail GROUP BY record_id
+      ) det_cnt ON det_cnt.record_id = ir.id
+      GROUP BY a2.supplier_id, a2.material_id
+    ) ins_stat ON ins_stat.supplier_id = s.id AND ins_stat.material_id = m.material_id
+    WHERE 1=1 ${where}
+    GROUP BY s.id, s.supplier_name, m.material_id, m.material_name, m.material_spec
+    ORDER BY s.supplier_name ASC, m.material_id ASC
+    LIMIT ${size} OFFSET ${offset}
+  `;
+  const [rows] = await db.pool.query(dataSql, params);
+
+  const list = rows.map(r => ({
+    supplier_id: r.supplier_id,
+    supplier_name: r.supplier_name,
+    material_id: r.material_id,
+    material_name: r.material_name,
+    material_spec: r.material_spec,
+    arrival_qty: Number(r.arrival_qty || 0),
+    inspect_count: Number(r.inspect_count || 0),
+    pass_count: Number(r.pass_count || 0),
+    total_count: Number(r.total_count || 0),
+    weighted_yield: Number(r.weighted_yield || 0)
+  }));
+
+  return { success: true, data: { list, total, page: Number(page), page_size: size } };
+}
+
 module.exports = {
   login,
   getSession,
@@ -2851,6 +4094,13 @@ module.exports = {
   createMaterial,
   updateMaterial,
   getRuleCodes,
+  queryArrivalOrders,
+  createArrivalOrder,
+  updateArrivalOrder,
+  deleteArrivalOrders,
+  querySuppliers,
+  createSupplier,
+  updateSupplier,
   createBom,
   importInspectItems,
   importInspectRules,
@@ -2871,6 +4121,13 @@ module.exports = {
   writeApiLog,
   queryApiLogs,
   queryYieldAnalysis,
+  queryYieldReport,
+  queryYieldDetailReport,
+  queryStockMovementReport,
+  queryStockMovementMaterials,
+  queryInspectionExecutionReport,
+  querySupplierYieldReport,
+  queryYieldItemDetail,
   getAssembleAnalysis,
   searchMainSn,
   queryCustomReports,
@@ -2878,5 +4135,13 @@ module.exports = {
   getCustomReportData,
   deleteCustomReports,
   updateCustomReport,
-  applyMultiBomEcn
+  parseSqlColumns,
+  applyMultiBomEcn,
+  queryUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  queryPermissions,
+  updatePermission,
+  getUserPermissions
 };

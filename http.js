@@ -1,11 +1,19 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const api = require('./server');
 
 const PORT = 8080;
 const WEB_DIR = path.join(__dirname, 'web');
+const RESOURCE_DIR = path.join(__dirname, 'resource');
+// 对外访问基地址（三坐标报告需返回绝对地址给解析服务使用）
+const PUBLIC_BASE = 'http://192.168.40.127:8080';
+// 三坐标 PDF 解析服务
+const CMM_PARSE_API = 'http://192.168.40.127:4310/api/parse-url';
+// 表面面型（PV）图片解析服务
+const PV_PARSE_API = 'http://192.168.40.127:4310/api/parse-pv';
 
 // MIME 类型映射
 const MIME = {
@@ -14,21 +22,197 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
   '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
+  '.ico': 'image/x-icon',
+  '.bmp': 'image/bmp',
+  '.webp': 'image/webp',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+  '.pdf': 'application/pdf'
 };
 
-// HTTP 服务：仅用于托管前端静态文件
-const server = http.createServer((req, res) => {
-  let urlPath = decodeURIComponent(req.url.split('?')[0]);
-  if (urlPath === '/') urlPath = '/index.html';
-  const filePath = path.join(WEB_DIR, urlPath);
+// 解析 multipart/form-data 上传
+function parseMultipart(req) {
+  return new Promise((resolve, reject) => {
+    const ct = req.headers['content-type'] || '';
+    const m = ct.match(/boundary=(.+)/);
+    if (!m) return reject(new Error('缺少 boundary'));
+    const boundary = '--' + m[1].trim();
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      const files = [];
+      let start = 0;
+      while (true) {
+        const idx = body.indexOf(boundary, start);
+        if (idx === -1) break;
+        start = idx + boundary.length + 2; // \r\n
+        const endIdx = body.indexOf(boundary, start);
+        if (endIdx === -1) break;
+        const part = body.slice(start, endIdx - 2); // -2 去掉 \r\n
+        const headerEnd = part.indexOf('\r\n\r\n');
+        if (headerEnd === -1) { start = endIdx + boundary.length + 2; continue; }
+        const headers = part.slice(0, headerEnd).toString('utf8');
+        const fileStart = headerEnd + 4;
+        const content = part.slice(fileStart);
+        const dispMatch = headers.match(/filename="([^"]*)"/i);
+        if (dispMatch) {
+          files.push({ filename: dispMatch[1], content, headers });
+        }
+        start = endIdx + boundary.length + 2;
+      }
+      resolve(files);
+    });
+    req.on('error', reject);
+  });
+}
+
+// HTTP 服务：托管前端静态文件 + resource 资源 + 图片上传接口
+const server = http.createServer(async (req, res) => {
+  const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+  // POST /api/upload 图片上传
+  if (req.method === 'POST' && urlPath === '/api/upload') {
+    try {
+      const files = await parseMultipart(req);
+      if (!files.length) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '未接收到文件' }));
+      }
+      // 保存第一个文件
+      const f = files[0];
+      const ext = path.extname(f.filename) || '.png';
+      const safeExt = ext.toLowerCase();
+      // 白名单限制
+      if (!['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff'].includes(safeExt)) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '不支持的图片格式' }));
+      }
+      const maxSize = 100 * 1024 * 1024; // 100MB（TIF 扫描图通常较大）
+      if (f.content.length > maxSize) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '图片超过 100MB' }));
+      }
+      if (!fs.existsSync(RESOURCE_DIR)) fs.mkdirSync(RESOURCE_DIR, { recursive: true });
+      const ts = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const hash = crypto.randomBytes(6).toString('hex');
+      const savedName = `img_${ts}_${hash}${safeExt}`;
+      const savedPath = path.join(RESOURCE_DIR, savedName);
+      fs.writeFileSync(savedPath, f.content);
+      const url = `/resource/${savedName}`;
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: true, data: { url, filename: savedName, size: f.content.length } }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: false, message: '上传失败: ' + e.message }));
+    }
+  }
+
+  // POST /api/upload-pdf 三坐标报告上传（仅 PDF，返回绝对地址）
+  if (req.method === 'POST' && urlPath === '/api/upload-pdf') {
+    try {
+      const files = await parseMultipart(req);
+      if (!files.length) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '未接收到文件' }));
+      }
+      const f = files[0];
+      const safeExt = (path.extname(f.filename) || '').toLowerCase();
+      if (safeExt !== '.pdf') {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '仅支持 PDF 文件' }));
+      }
+      const maxSize = 50 * 1024 * 1024; // 50MB
+      if (f.content.length > maxSize) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: 'PDF 超过 50MB' }));
+      }
+      if (!fs.existsSync(RESOURCE_DIR)) fs.mkdirSync(RESOURCE_DIR, { recursive: true });
+      const ts = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const hash = crypto.randomBytes(6).toString('hex');
+      const savedName = `cmm_${ts}_${hash}.pdf`;
+      fs.writeFileSync(path.join(RESOURCE_DIR, savedName), f.content);
+      // 返回可以直接给解析服务使用的绝对地址
+      const url = `${PUBLIC_BASE}/resource/${savedName}`;
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: true, data: { url, filename: savedName, size: f.content.length } }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: false, message: '上传失败: ' + e.message }));
+    }
+  }
+
+  // GET /api/parse-cmm?path=...  代理调用三坐标解析服务（规避浏览器跨域）
+  if (req.method === 'GET' && urlPath === '/api/parse-cmm') {
+    try {
+      const q = new URL(req.url, 'http://localhost');
+      const p = q.searchParams.get('path');
+      if (!p) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '缺少 path 参数' }));
+      }
+      const target = `${CMM_PARSE_API}?path=${encodeURIComponent(p)}`;
+      const r = await fetch(target);
+      const text = await r.text();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(text);
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: false, message: '解析服务调用失败: ' + e.message }));
+    }
+  }
+
+  // GET /api/parse-pv?url=...  代理调用表面面型图片解析服务（规避浏览器跨域）
+  if (req.method === 'GET' && urlPath === '/api/parse-pv') {
+    try {
+      const q = new URL(req.url, 'http://localhost');
+      const u = q.searchParams.get('url');
+      if (!u) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: false, message: '缺少 url 参数' }));
+      }
+      const target = `${PV_PARSE_API}?url=${encodeURIComponent(u)}`;
+      const r = await fetch(target);
+      const text = await r.text();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(text);
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: false, message: '面型解析服务调用失败: ' + e.message }));
+    }
+  }
+
+  // /resource/* 静态图片资源
+  if (urlPath.startsWith('/resource/')) {
+    const rel = urlPath.replace(/^\/resource\//, '');
+    const filePath = path.join(RESOURCE_DIR, rel);
+    // 防目录穿越
+    const real = path.resolve(filePath);
+    if (!real.startsWith(path.resolve(RESOURCE_DIR))) {
+      res.writeHead(403); return res.end('Forbidden');
+    }
+    if (!fs.existsSync(real) || !fs.statSync(real).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('404 Not Found');
+    }
+    const ext = path.extname(real).toLowerCase();
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': 'public, max-age=3600'
+    });
+    return fs.createReadStream(real).pipe(res);
+  }
+
+  // 托管前端静态文件
+  let file = urlPath === '/' ? '/index.html' : urlPath;
+  const filePath = path.join(WEB_DIR, file);
 
   // 防止目录穿越
   if (!filePath.startsWith(WEB_DIR)) {
-    res.writeHead(403);
-    return res.end('Forbidden');
+    res.writeHead(403); return res.end('Forbidden');
   }
 
   fs.readFile(filePath, (err, data) => {
@@ -54,6 +238,10 @@ const OPERATOR_FIELDS = {
   updateInspectRule: ['update_by'],
   createMaterial: ['create_by'],
   updateMaterial: ['update_by'],
+  createArrivalOrder: ['create_by'],
+  updateArrivalOrder: ['update_by'],
+  createSupplier: ['create_by'],
+  updateSupplier: ['update_by'],
   createBom: ['create_by'],
   updateBomDetail: ['update_by'],
   importInspectItems: ['create_by'],
@@ -62,7 +250,9 @@ const OPERATOR_FIELDS = {
   importBom: ['create_by'],
   createCustomReport: ['create_by'],
   updateCustomReport: ['update_by'],
-  applyMultiBomEcn: ['update_by']
+  applyMultiBomEcn: ['update_by'],
+  createUser: ['create_by'],
+  updateUser: ['update_by']
 };
 
 // WebSocket 服务：业务接口
@@ -211,6 +401,27 @@ wss.on('connection', (ws) => {
         case 'updateMaterial':
           result = await api.updateMaterial(data || {});
           break;
+        case 'queryArrivalOrders':
+          result = await api.queryArrivalOrders(data || {});
+          break;
+        case 'createArrivalOrder':
+          result = await api.createArrivalOrder(data || {});
+          break;
+        case 'updateArrivalOrder':
+          result = await api.updateArrivalOrder(data || {});
+          break;
+        case 'deleteArrivalOrders':
+          result = await api.deleteArrivalOrders(data || {});
+          break;
+        case 'querySuppliers':
+          result = await api.querySuppliers(data || {});
+          break;
+        case 'createSupplier':
+          result = await api.createSupplier(data || {});
+          break;
+        case 'updateSupplier':
+          result = await api.updateSupplier(data || {});
+          break;
         case 'updateInspectItem':
           result = await api.updateInspectItem(data || {});
           break;
@@ -274,6 +485,27 @@ wss.on('connection', (ws) => {
         case 'queryYieldAnalysis':
           result = await api.queryYieldAnalysis(data || {});
           break;
+        case 'queryYieldReport':
+          result = await api.queryYieldReport(data || {});
+          break;
+        case 'queryYieldDetailReport':
+          result = await api.queryYieldDetailReport(data || {});
+          break;
+        case 'queryStockMovementReport':
+          result = await api.queryStockMovementReport(data || {});
+          break;
+        case 'queryStockMovementMaterials':
+          result = await api.queryStockMovementMaterials();
+          break;
+        case 'queryInspectionExecutionReport':
+          result = await api.queryInspectionExecutionReport(data || {});
+          break;
+        case 'querySupplierYieldReport':
+          result = await api.querySupplierYieldReport(data || {});
+          break;
+        case 'queryYieldItemDetail':
+          result = await api.queryYieldItemDetail(data || {});
+          break;
         case 'getAssembleAnalysis':
           result = await api.getAssembleAnalysis(data || {});
           break;
@@ -294,6 +526,30 @@ wss.on('connection', (ws) => {
           break;
         case 'updateCustomReport':
           result = await api.updateCustomReport(data || {});
+          break;
+        case 'parseSqlColumns':
+          result = await api.parseSqlColumns(data || {});
+          break;
+        case 'queryUsers':
+          result = await api.queryUsers(data || {});
+          break;
+        case 'createUser':
+          result = await api.createUser(data || {});
+          break;
+        case 'updateUser':
+          result = await api.updateUser(data || {});
+          break;
+        case 'deleteUser':
+          result = await api.deleteUser(data || {});
+          break;
+        case 'queryPermissions':
+          result = await api.queryPermissions(data || {});
+          break;
+        case 'updatePermission':
+          result = await api.updatePermission(data || {});
+          break;
+        case 'getUserPermissions':
+          result = await api.getUserPermissions(String(data?.username || data || '').trim());
           break;
         // 校验主件SN：查重 → 条码解析 → 主件BOM查询
         case 'scanMainSn': {
@@ -371,5 +627,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`服务已启动: http://192.168.40.118:${PORT}`);
+  console.log(`服务已启动: http://192.168.40.127:${PORT}`);
 });
